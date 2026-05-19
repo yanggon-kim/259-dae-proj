@@ -1,0 +1,27 @@
+{
+  "spec_fp32_tflops": 56.349,
+  "spec_dram_gbps": 960.0,
+  "ncu_clock_fp32_tflops": 55.9104,
+  "ncu_clock_dram_gbps": 941.44,
+  "n": 1032192,
+  "threads_per_cta": 256,
+  "memory_iters_roofline": 1,
+  "compute_sweep": [
+    0,
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "memory_sweep_compute_iters": 16,
+  "memory_sweep": [
+    1,
+    2,
+    4,
+    8
+  ]
+}

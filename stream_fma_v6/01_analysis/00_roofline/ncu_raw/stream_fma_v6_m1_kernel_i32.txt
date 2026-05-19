@@ -1,0 +1,52 @@
+$ /usr/local/cuda-13.2/bin/ncu --target-processes all --kernel-name regex:stream_fma_v6_m1_kernel --launch-count 1 --metrics gpu__time_duration,dram__bytes,dram__bytes.sum.per_second,dram__bytes.sum.pct_of_peak_sustained_elapsed,dram__bytes_op_read,dram__bytes_op_write,sm__sass_thread_inst_executed_op_ffma_pred_on,sm__sass_thread_inst_executed_op_fadd_pred_on,smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct,sm__warps_active.avg.per_cycle_active,sm__warps_active.avg.pct_of_peak_sustained_active,smsp__warps_eligible.avg.per_cycle_active,smsp__warps_eligible.avg.pct_of_peak_sustained_active,launch__occupancy_limit_blocks,launch__occupancy_limit_registers,launch__occupancy_limit_warps,launch__occupancy_limit_shared_mem --print-units base --print-metric-name name /home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6/stream_fma_v6 --n 1032192 --iters 32 --memory-iters 1 --warmup 0 --repeats 1
+
+==PROF== Connected to process 2144935 (/home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6/stream_fma_v6)
+==PROF== Profiling "stream_fma_v6_m1_kernel": 0%....50%....100% - 4 passes
+device=NVIDIA GeForce RTX 5080  cc=12.0  n=1032192  iters=32  memory_iters=1  repeats=1  warmup=0
+CTAs=4032  threads/CTA=256  elements/CTA=256  elements/thread=1  mapping=cta_tile_no_rounds
+stream_fma_v6 time_ms=809.6876  global_GB/s=    0.02  est_GFLOP/s=    0.25  AI=12.125  max_abs=0.000e+00  max_rel=0.000e+00
+verification=PASS
+==PROF== Disconnected from process 2144935
+[2144935] stream_fma_v6@127.0.0.1
+  stream_fma_v6_m1_kernel (4032, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 12.0
+    Section: Command line profiler metrics
+    ------------------------------------------------------------ ----------- ---------------
+    Metric Name                                                  Metric Unit    Metric Value
+    ------------------------------------------------------------ ----------- ---------------
+    dram__bytes.sum.pct_of_peak_sustained_elapsed                          %           85.70
+    dram__bytes.sum.per_second                                        byte/s 808400835073.07
+    launch__occupancy_limit_blocks                                     block              24
+    launch__occupancy_limit_registers                                  block              16
+    launch__occupancy_limit_shared_mem                                 block              16
+    launch__occupancy_limit_warps                                      block               6
+    dram__bytes.avg                                                     byte         1548896
+    dram__bytes.max                                                     byte         1549312
+    dram__bytes.min                                                     byte         1548288
+    dram__bytes.sum                                                     byte        12391168
+    dram__bytes_op_read.avg                                             byte         1548896
+    dram__bytes_op_read.max                                             byte         1549312
+    dram__bytes_op_read.min                                             byte         1548288
+    dram__bytes_op_read.sum                                             byte        12391168
+    dram__bytes_op_write.avg                                            byte               0
+    dram__bytes_op_write.max                                            byte               0
+    dram__bytes_op_write.min                                            byte               0
+    dram__bytes_op_write.sum                                            byte               0
+    gpu__time_duration.avg                                                ns           15328
+    gpu__time_duration.max                                                ns           15328
+    gpu__time_duration.min                                                ns           15328
+    gpu__time_duration.sum                                                ns           15328
+    sm__sass_thread_inst_executed_op_fadd_pred_on.avg                   inst           24576
+    sm__sass_thread_inst_executed_op_fadd_pred_on.max                   inst           30720
+    sm__sass_thread_inst_executed_op_fadd_pred_on.min                   inst           20480
+    sm__sass_thread_inst_executed_op_fadd_pred_on.sum                   inst         2064384
+    sm__sass_thread_inst_executed_op_ffma_pred_on.avg                   inst         1179648
+    sm__sass_thread_inst_executed_op_ffma_pred_on.max                   inst         1474560
+    sm__sass_thread_inst_executed_op_ffma_pred_on.min                   inst          983040
+    sm__sass_thread_inst_executed_op_ffma_pred_on.sum                   inst        99090432
+    sm__warps_active.avg.pct_of_peak_sustained_active                      %           84.73
+    sm__warps_active.avg.per_cycle_active                               warp           40.67
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct           %           82.22
+    smsp__warps_eligible.avg.pct_of_peak_sustained_active                  %            6.15
+    smsp__warps_eligible.avg.per_cycle_active                           warp            0.74
+    ------------------------------------------------------------ ----------- ---------------
+

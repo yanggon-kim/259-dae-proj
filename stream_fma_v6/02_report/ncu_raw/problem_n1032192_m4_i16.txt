@@ -1,0 +1,36 @@
+$ /usr/local/cuda-13.2/bin/ncu --target-processes all --kernel-name regex:stream_fma_v6_m4_kernel --launch-count 1 --metrics gpu__time_duration,dram__bytes,dram__bytes.sum.per_second,dram__bytes.sum.pct_of_peak_sustained_elapsed,sm__sass_thread_inst_executed_op_ffma_pred_on,sm__sass_thread_inst_executed_op_fadd_pred_on,sm__warps_active.avg.pct_of_peak_sustained_active --print-units base --print-metric-name name /home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6/stream_fma_v6 --n 1032192 --iters 16 --memory-iters 4 --warmup 0 --repeats 1
+
+==PROF== Connected to process 2097370 (/home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6/stream_fma_v6)
+==PROF== Profiling "stream_fma_v6_m4_kernel": 0%....50%....100% - 3 passes
+device=NVIDIA GeForce RTX 5080  cc=12.0  n=1032192  iters=16  memory_iters=4  repeats=1  warmup=0
+CTAs=1008  threads/CTA=256  elements/CTA=1024  elements/thread=4  mapping=cta_tile_no_rounds
+stream_fma_v6 time_ms=641.1293  global_GB/s=    0.03  est_GFLOP/s=    0.16  AI= 6.125  max_abs=0.000e+00  max_rel=0.000e+00
+verification=PASS
+==PROF== Disconnected from process 2097370
+[2097370] stream_fma_v6@127.0.0.1
+  stream_fma_v6_m4_kernel (1008, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 12.0
+    Section: Command line profiler metrics
+    ------------------------------------------------- ----------- ---------------
+    Metric Name                                       Metric Unit    Metric Value
+    ------------------------------------------------- ----------- ---------------
+    dram__bytes.sum.pct_of_peak_sustained_elapsed               %           84.80
+    dram__bytes.sum.per_second                             byte/s 800148760330.58
+    dram__bytes.avg                                          byte         1549088
+    dram__bytes.max                                          byte         1549312
+    dram__bytes.min                                          byte         1548288
+    dram__bytes.sum                                          byte        12392704
+    gpu__time_duration.avg                                     ns           15488
+    gpu__time_duration.max                                     ns           15488
+    gpu__time_duration.min                                     ns           15488
+    gpu__time_duration.sum                                     ns           15488
+    sm__sass_thread_inst_executed_op_fadd_pred_on.avg        inst           24576
+    sm__sass_thread_inst_executed_op_fadd_pred_on.max        inst           28672
+    sm__sass_thread_inst_executed_op_fadd_pred_on.min        inst           20480
+    sm__sass_thread_inst_executed_op_fadd_pred_on.sum        inst         2064384
+    sm__sass_thread_inst_executed_op_ffma_pred_on.avg        inst          589824
+    sm__sass_thread_inst_executed_op_ffma_pred_on.max        inst          688128
+    sm__sass_thread_inst_executed_op_ffma_pred_on.min        inst          491520
+    sm__sass_thread_inst_executed_op_ffma_pred_on.sum        inst        49545216
+    sm__warps_active.avg.pct_of_peak_sustained_active           %           78.46
+    ------------------------------------------------- ----------- ---------------
+

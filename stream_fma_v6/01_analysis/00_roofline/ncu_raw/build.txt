@@ -1,0 +1,10 @@
+$ make -C /home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6 all instructions
+
+make: Entering directory '/home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6'
+make: Nothing to be done for 'all'.
+/usr/local/cuda-13.2/bin/nvcc -O3 -std=c++17 -arch=sm_120 -lineinfo -ptx -o 00_instructions/stream_fma_v6.ptx stream_fma_v6.cu
+/usr/local/cuda-13.2/bin/cuobjdump --dump-sass stream_fma_v6 > 00_instructions/stream_fma_v6.sass
+awk 'BEGIN{emit=0} /^\.visible \.entry stream_fma_v6_m4_kernel\(/ {emit=1} emit {print} emit && /^}/ {emit=0}' 00_instructions/stream_fma_v6.ptx > 00_instructions/stream_fma_v6_m4_kernel.ptx
+awk 'BEGIN{emit=0} /Function : stream_fma_v6_m4_kernel/ {emit=1} emit && /Function :/ && $0 !~ /stream_fma_v6_m4_kernel/ {exit} emit {print}' 00_instructions/stream_fma_v6.sass > 00_instructions/stream_fma_v6_m4_kernel.sass
+awk '/^[[:space:]]*\/\*[0-9a-fA-F]+/ {line=$0; sub(/[[:space:]]*\/\* 0x[0-9a-fA-F]+ \*\/[[:space:]]*$/, "", line); print line}' 00_instructions/stream_fma_v6_m4_kernel.sass > 00_instructions/stream_fma_v6_m4_kernel.instructions.sass
+make: Leaving directory '/home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6'

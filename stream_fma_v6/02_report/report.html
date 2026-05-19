@@ -1,0 +1,189 @@
+<!doctype html><html><head><meta charset='utf-8'><title>GPU Kernel Performance Model Report</title><style>
+body { font-family: Arial, sans-serif; max-width: 980px; margin: 32px auto; color: #111; line-height: 1.45; }
+h1, h2, h3 { color: #111; }
+h1 { border-bottom: 2px solid #222; padding-bottom: 8px; }
+pre { background: #f4f4f4; padding: 12px; overflow-x: auto; border-radius: 4px; }
+code { background: #f4f4f4; padding: 1px 3px; border-radius: 3px; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: 13px; }
+th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+th { background: #eee; }
+figure { margin: 18px 0; page-break-inside: avoid; }
+img { max-width: 100%; border: 1px solid #ddd; }
+figcaption { font-size: 12px; color: #555; text-align: center; }
+ul { margin-top: 0; }
+@media print { body { margin: 18mm; } h2 { page-break-after: avoid; } }
+</style></head><body><h1>GPU Kernel Performance Model Report</h1>
+<h2>1. Kernel Explanation</h2>
+<h3>Streaming FMA Kernel</h3>
+<p>The kernel is a streaming FMA microbenchmark. FMA means fused multiply-add: <code>fmaf(a, b, c)</code> computes <code>a * b + c</code> as one fused FP32 instruction. In this report, one FMA instruction is counted as 2 floating-point operations because it performs one multiply and one add.</p>
+<p>Each CTA owns a contiguous tile of <code>blockDim.x * memory_iters</code> elements. Each thread loads <code>memory_iters</code> elements from three input arrays, applies a repeated FMA chain, and stores <code>memory_iters</code> output values. This creates a simple load-compute-store structure that is useful for studying how streaming DRAM traffic overlaps with scalar FP32 execution.</p>
+<p>The core indexing is:</p>
+<pre><code>block_base = blockIdx.x * blockDim.x * MemoryIters;
+idx[m] = block_base + m * blockDim.x + threadIdx.x;</code></pre>
+<h3>Load Phase</h3>
+<p>The load phase computes one global index per element handled by the thread. For each <code>m</code>, all lanes in a warp access consecutive locations, so the loads from <code>a[idx[m]]</code>, <code>b[idx[m]]</code>, and <code>c[idx[m]]</code> are coalesced. The loaded values are kept in per-thread registers as <code>acc[m]</code>, <code>x[m]</code>, and <code>y[m]</code>.</p>
+<pre><code>for (int m = 0; m &lt; MemoryIters; ++m) {
+  idx[m] = block_base + m * blockDim.x + threadIdx.x;
+  acc[m] = a[idx[m]];
+  x[m]   = b[idx[m]];
+  y[m]   = c[idx[m]];
+}</code></pre>
+<h3>Compute Phase</h3>
+<p>The compute phase repeatedly updates the loaded register values. For each element and each <code>compute_iters</code> step, the kernel executes 3 FMA instructions, or 6 FP32 operations. This phase does not load more global data, so increasing <code>compute_iters</code> increases arithmetic intensity while keeping the same logical element stream.</p>
+<pre><code>for (int r = 0; r &lt; compute_iters; ++r) {
+  for (int m = 0; m &lt; MemoryIters; ++m) {
+    acc[m] = fmaf(acc[m], 1.0001f, x[m]);
+    x[m]   = fmaf(x[m],   0.9999f, y[m]);
+    y[m]   = fmaf(y[m],   1.0003f, acc[m]);
+  }
+}</code></pre>
+<h3>Store Phase</h3>
+<p>The store phase writes one output value for every element loaded by the thread. The output combines the final accumulator streams, so each logical element has 3 input loads and 1 output store at the algorithm level.</p>
+<pre><code>for (int m = 0; m &lt; MemoryIters; ++m) {
+  out[idx[m]] = acc[m] + x[m] + y[m];
+}</code></pre>
+<h3>Parameter Meaning</h3>
+<p><code>compute_iters</code> is the main arithmetic-intensity knob. Larger values add more FMA work per loaded element, push the kernel toward the compute-bound region, and reduce the fraction of runtime explained by DRAM bandwidth.</p>
+<p><code>memory_iters</code> is the per-thread batching knob. Larger values make each thread load, compute, and store more elements, which reduces CTA count for a fixed <code>n</code>, increases register pressure, and changes achieved occupancy and latency hiding. The full-tile rule is <code>n % (threads_per_cta * memory_iters) == 0</code>, so every launched thread has valid work.</p>
+<h2>2. Model</h2>
+<p>Inputs are <code>n</code>, <code>compute_iters</code>, <code>memory_iters</code>, <code>threads_per_cta</code>, FP32 TOPS, DRAM bandwidth, SM count, register-file size, and warp/CTA limits.</p>
+<h3>Basic Outputs Required by Mini-Project</h3>
+<p>The required model outputs are performance in TOPS and achieved operational intensity. TOPS means tera-operations per second. Operational intensity means operations per byte.</p>
+<pre><code>elements_per_cta = threads_per_cta * memory_iters
+ctas = n / elements_per_cta
+ops = n * (6 * compute_iters + 2)
+algorithm_bytes = n * 16
+OI_algorithm = ops / algorithm_bytes
+modeled_dram_bytes = n * dram_bytes_per_element
+OI_dram = ops / modeled_dram_bytes
+compute_time = ops / effective_fpu_ops_per_s
+dram_time = modeled_dram_bytes / effective_dram_bytes_per_s
+time = max(compute_time, dram_time)
+TOPS = ops / time / 1e12</code></pre>
+<p><code>ops</code> is the total FP32 operation count. The term <code>6 * compute_iters</code> comes from 3 FMA instructions per element per compute iteration, with 2 operations per FMA. The <code>+ 2</code> term is the final output add chain, <code>acc + x + y</code>.</p>
+<p><code>algorithm_bytes</code> is the logical traffic from the CUDA source: 3 FP32 loads and 1 FP32 store per element, or 16 B/element. <code>modeled_dram_bytes</code> is the NCU-calibrated DRAM traffic used by the bottleneck model. It is lower here because NCU reports this kernel as mostly read-dominated DRAM traffic.</p>
+<p>Example for <code>n=1032192</code>, <code>compute_iters=16</code>, <code>memory_iters=4</code>:</p>
+<pre><code>ctas = 1032192 / (256 * 4) = 1008
+OI_algorithm = (6 * 16 + 2) / 16 = 6.125 ops/byte</code></pre>
+<h3>Extended Outputs</h3>
+<p>The extended outputs explain why the kernel reaches a particular TOPS value. They are not required by the mini-project statement, but they make the model useful for architecture analysis.</p>
+<pre><code>resident_ctas_per_sm = min(CTA limit, warp limit, register limit, shared-memory limit)
+resident_warps_per_sm = resident_ctas_per_sm * warps_per_cta
+estimated_achieved_occupancy = estimated_active_warps_per_sm / max_warps_per_sm
+predicted_dram_gbps = modeled_dram_bytes / time / 1e9
+dram_utilization_pct = predicted_dram_gbps / peak_dram_gbps * 100
+bottleneck = compute if compute_time &gt;= dram_time else dram</code></pre>
+<p>Warp occupancy estimates how many warps are active on each SM relative to the hardware maximum. The model first computes the theoretical resident warps from CTA, warp, register, and shared-memory limits, then applies a wave-drain factor for small grids. Register counts come from <code>cuobjdump</code>: 12, 20, 36, and 40 registers/thread for <code>memory_iters=1,2,4,8</code>.</p>
+<p>DRAM utilization predicts how much of peak DRAM bandwidth the kernel uses. It is computed from the modeled DRAM bytes divided by the predicted runtime, then normalized by the hardware peak DRAM bandwidth.</p>
+<h3>Definitions and Calibrated Terms</h3>
+<p>Tuned constants are small and physical. Scalar-FMA efficiency captures that this kernel does not reach the ideal CUDA-core peak. The model uses 12 DRAM bytes per element because NCU reports mostly read DRAM traffic for this kernel. DRAM efficiency captures sustained streaming bandwidth. A wave-drain factor accounts for reduced average occupancy when the grid exposes fewer CTA waves.</p>
+<p><code>effective_fpu_ops_per_s</code> is <code>fpu_tops * compute_efficiency * 1e12</code>. It is the scalar FP32 compute rate available to this kernel after accounting for instruction mix and issue efficiency. <code>effective_dram_bytes_per_s</code> is <code>dram_bw_gbps * dram_efficiency * occupancy_bw_scale * 1e9</code>. It is the sustained DRAM service rate available to this streaming access pattern.</p>
+<p><code>dram_bytes_per_element</code> is the calibrated DRAM traffic per element. <code>dram_efficiency</code> captures the gap between peak DRAM bandwidth and the sustained bandwidth reached by this coalesced streaming kernel. <code>occupancy_bw_scale</code> reduces effective bandwidth when too few active warps are available to hide memory latency.</p>
+<p>The main challenge is that algorithm bytes are 16 B/element, but NCU DRAM bytes are closer to 12 B/element. I address this by reporting algorithm OI separately from the NCU-like modeled DRAM traffic. The DRAM utilization submodel uses the same predicted runtime as the bottleneck model, so utilization falls naturally when the kernel becomes compute-bound.</p>
+<h2>3. Validation</h2>
+<p>Validation used actual NCU measurements on the RTX 5080. The model remains parameterized, so TitanV values can be substituted later.</p>
+<p>Parameter sweeps:</p>
+<ul><li>Problem size sweep: `n=[258048, 516096, 1032192, 2064384, 4128768]`, `compute_iters=16`, `memory_iters=4`.</li></ul>
+<ul><li>Tile size sweep: `n=1032192`, `compute_iters=16`, `memory_iters=1,2,4,8`.</li></ul>
+<ul><li>Compute sweep: `n=1032192`, `memory_iters=1`, `compute_iters=0..128`.</li></ul>
+<p>MAPE means Mean Absolute Percentage Error. It is computed as <code>(100 / N) * sum(abs((predicted_i - measured_i) / measured_i))</code>; lower is better. Rows with zero or invalid measured values are excluded.</p>
+<p>Problem-size runtime MAPE:</p>
+<ul><li>Model: `8.23%`</li></ul>
+<ul><li>Peak roofline: `14.43%`</li></ul>
+<p>Tile-size runtime MAPE:</p>
+<ul><li>Model: `1.57%`</li></ul>
+<ul><li>Peak roofline: `11.53%`</li></ul>
+<p>DRAM BW utilization MAPE:</p>
+<ul><li>Problem-size sweep: `9.35%`</li></ul>
+<ul><li>Tile-size sweep: `1.61%`</li></ul>
+<p>Eligible-warp occupancy MAPE:</p>
+<ul><li>Compute sweep: `16.67%`</li></ul>
+<ul><li>Tile-size sweep: `3.06%`</li></ul>
+<figure><img src="assets/error_vs_problem_size.png" alt="Error vs problem size"><figcaption>Error vs problem size</figcaption></figure>
+<figure><img src="assets/error_vs_tile_size.png" alt="Error vs tile size"><figcaption>Error vs tile size</figcaption></figure>
+<figure><img src="assets/dram_utilization_problem_size.png" alt="Problem-size DRAM utilization"><figcaption>Problem-size DRAM utilization</figcaption></figure>
+<figure><img src="assets/model_vs_ncu_compute_iters.png" alt="Model vs NCU over compute_iters"><figcaption>Model vs NCU over compute_iters</figcaption></figure>
+<figure><img src="assets/model_vs_ncu_memory_iters.png" alt="Model vs NCU over memory_iters"><figcaption>Model vs NCU over memory_iters</figcaption></figure>
+<figure><img src="assets/occupancy_vs_ncu_memory_iters.png" alt="Occupancy model"><figcaption>Occupancy model</figcaption></figure>
+<figure><img src="assets/dram_bw_utilization_vs_ncu.png" alt="DRAM utilization model"><figcaption>DRAM utilization model</figcaption></figure>
+<h3>Problem Size Results</h3>
+<table>
+<thead><tr><th>n</th><th>CTAs</th><th>measured TOPS</th><th>model TOPS</th><th>NCU DRAM peak %</th><th>model DRAM peak %</th><th>model error %</th><th>roofline error %</th></tr></thead>
+<tbody>
+<tr><td>258048</td><td>252</td><td>4.909</td><td>5.719</td><td>63.99</td><td>74.39</td><td>-14.17</td><td>-14.88</td></tr>
+<tr><td>516096</td><td>504</td><td>5.727</td><td>6.574</td><td>74.56</td><td>85.50</td><td>-12.88</td><td>-0.69</td></tr>
+<tr><td>1032192</td><td>1008</td><td>6.531</td><td>6.574</td><td>84.80</td><td>85.50</td><td>-0.65</td><td>13.26</td></tr>
+<tr><td>2064384</td><td>2016</td><td>6.940</td><td>6.574</td><td>90.02</td><td>85.50</td><td>5.57</td><td>20.35</td></tr>
+<tr><td>4128768</td><td>4032</td><td>7.092</td><td>6.574</td><td>94.97</td><td>85.50</td><td>7.88</td><td>22.98</td></tr>
+</tbody></table>
+<h3>Tile Size Results</h3>
+<table>
+<thead><tr><th>memory_iters</th><th>CTAs</th><th>measured TOPS</th><th>model TOPS</th><th>NCU DRAM peak %</th><th>model DRAM peak %</th><th>measured occ %</th><th>model occ %</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>4032</td><td>6.669</td><td>6.574</td><td>86.63</td><td>85.50</td><td>85.00</td><td>84.36</td></tr>
+<tr><td>2</td><td>2016</td><td>6.491</td><td>6.574</td><td>84.42</td><td>85.50</td><td>85.84</td><td>81.88</td></tr>
+<tr><td>4</td><td>1008</td><td>6.531</td><td>6.574</td><td>84.85</td><td>85.50</td><td>78.43</td><td>77.33</td></tr>
+<tr><td>8</td><td>504</td><td>6.386</td><td>6.574</td><td>82.94</td><td>85.50</td><td>68.30</td><td>69.60</td></tr>
+</tbody></table>
+<h3>Scheduler Readiness</h3>
+<p>Active warp occupancy is the percentage of resident active warps on the SM, including stalled warps. Eligible warps are active warps that are ready to issue an instruction at the scheduler. Long scoreboard stall is the fraction of warp issue stall attributed to long-latency dependencies, commonly global-memory dependencies.</p>
+<p>In the compute sweep, active occupancy stays high while eligible warps rise as <code>compute_iters</code> increases. This means the SM has many resident warps even at low <code>compute_iters</code>, but most of them are not ready to issue because long scoreboard stalls dominate. In the memory sweep, changing <code>memory_iters</code> changes CTA count and register pressure, so active occupancy and eligible readiness move together with the amount of per-thread batching.</p>
+<figure><img src="assets/compute_iters_active_eligible_scoreboard.png" alt="Compute sweep active vs eligible warps"><figcaption>Compute sweep active vs eligible warps</figcaption></figure>
+<table>
+<thead><tr><th>compute_iters</th><th>GFLOP/s</th><th>active occ %</th><th>eligible %</th><th>eligible warps/SMSP cycle</th><th>long scoreboard %</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>137.3</td><td>84.88</td><td>0.85</td><td>0.10</td><td>95.88</td></tr>
+<tr><td>1</td><td>544.4</td><td>84.98</td><td>1.17</td><td>0.14</td><td>91.43</td></tr>
+<tr><td>2</td><td>954.7</td><td>84.63</td><td>1.38</td><td>0.17</td><td>92.91</td></tr>
+<tr><td>4</td><td>1769.3</td><td>85.74</td><td>1.91</td><td>0.23</td><td>89.66</td></tr>
+<tr><td>8</td><td>3353.0</td><td>84.97</td><td>2.37</td><td>0.28</td><td>86.62</td></tr>
+<tr><td>16</td><td>6613.2</td><td>85.76</td><td>3.47</td><td>0.42</td><td>86.17</td></tr>
+<tr><td>32</td><td>13064.0</td><td>84.73</td><td>6.15</td><td>0.74</td><td>82.22</td></tr>
+<tr><td>64</td><td>25255.2</td><td>83.57</td><td>22.90</td><td>2.75</td><td>56.84</td></tr>
+<tr><td>128</td><td>38507.2</td><td>83.72</td><td>50.06</td><td>6.01</td><td>23.00</td></tr>
+</tbody></table>
+<figure><img src="assets/memory_iters_active_eligible_scoreboard.png" alt="Memory sweep active vs eligible warps"><figcaption>Memory sweep active vs eligible warps</figcaption></figure>
+<table>
+<thead><tr><th>memory_iters</th><th>GFLOP/s</th><th>active occ %</th><th>eligible %</th><th>eligible warps/SMSP cycle</th><th>long scoreboard %</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>6669.0</td><td>85.00</td><td>3.41</td><td>0.41</td><td>86.86</td></tr>
+<tr><td>2</td><td>6490.9</td><td>85.84</td><td>3.13</td><td>0.38</td><td>89.42</td></tr>
+<tr><td>4</td><td>6531.2</td><td>78.43</td><td>2.79</td><td>0.33</td><td>84.88</td></tr>
+<tr><td>8</td><td>6386.0</td><td>68.30</td><td>3.73</td><td>0.45</td><td>50.57</td></tr>
+</tbody></table>
+<h3>Eligible-Warp Model Extension</h3>
+<p>The eligible-warp extension estimates which active warps are actually ready to issue. The model first separates <code>compute_time</code> and <code>dram_time</code> into overlapped time and exposed bottleneck time, then predicts a readiness fraction from compute exposure plus a small batching term for larger <code>memory_iters</code>. This is not a cycle-accurate memory-latency model, but it lets the roofline model distinguish resident warps from schedulable warps.</p>
+<figure><img src="assets/eligible_warps_vs_ncu_compute_iters.png" alt="Eligible-warp model over compute_iters"><figcaption>Eligible-warp model over compute_iters</figcaption></figure>
+<table>
+<thead><tr><th>compute_iters</th><th>NCU eligible %</th><th>model eligible %</th><th>NCU eligible warps/SMSP cycle</th><th>model eligible warps/SMSP cycle</th><th>compute exposure</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>0.85</td><td>1.18</td><td>0.10</td><td>0.14</td><td>0.003</td></tr>
+<tr><td>1</td><td>1.17</td><td>1.21</td><td>0.14</td><td>0.14</td><td>0.014</td></tr>
+<tr><td>2</td><td>1.38</td><td>1.25</td><td>0.17</td><td>0.15</td><td>0.024</td></tr>
+<tr><td>4</td><td>1.91</td><td>1.38</td><td>0.23</td><td>0.17</td><td>0.045</td></tr>
+<tr><td>8</td><td>2.37</td><td>1.82</td><td>0.28</td><td>0.22</td><td>0.087</td></tr>
+<tr><td>16</td><td>3.47</td><td>3.24</td><td>0.42</td><td>0.39</td><td>0.170</td></tr>
+<tr><td>32</td><td>6.15</td><td>7.98</td><td>0.74</td><td>0.96</td><td>0.337</td></tr>
+<tr><td>64</td><td>22.90</td><td>23.85</td><td>2.75</td><td>2.86</td><td>0.671</td></tr>
+<tr><td>128</td><td>50.06</td><td>46.74</td><td>6.01</td><td>5.61</td><td>1.000</td></tr>
+</tbody></table>
+<figure><img src="assets/eligible_warps_vs_ncu_memory_iters.png" alt="Eligible-warp model over memory_iters"><figcaption>Eligible-warp model over memory_iters</figcaption></figure>
+<table>
+<thead><tr><th>memory_iters</th><th>NCU eligible %</th><th>model eligible %</th><th>NCU eligible warps/SMSP cycle</th><th>model eligible warps/SMSP cycle</th><th>compute exposure</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>3.41</td><td>3.24</td><td>0.41</td><td>0.39</td><td>0.170</td></tr>
+<tr><td>2</td><td>3.13</td><td>3.14</td><td>0.38</td><td>0.38</td><td>0.170</td></tr>
+<tr><td>4</td><td>2.79</td><td>2.97</td><td>0.33</td><td>0.36</td><td>0.170</td></tr>
+<tr><td>8</td><td>3.73</td><td>3.72</td><td>0.45</td><td>0.45</td><td>0.170</td></tr>
+</tbody></table>
+<p>The model performs well across memory-bound settings because it captures the effective DRAM traffic and streaming bandwidth. The peak roofline is less accurate: it is pessimistic in the memory-bound region because it uses algorithm bytes, and optimistic at high <code>compute_iters</code> because it assumes ideal scalar FMA throughput. The weakest model points are the smallest problem sizes, where launch and wave-drain effects dominate, and the largest problem sizes, where measured DRAM bandwidth rises above the single calibrated bandwidth.</p>
+<h2>4. Architecture Insight</h2>
+<p>The sensitivity analysis scales hardware parameters around the measured configuration for <code>n=1032192</code>, <code>compute_iters=16</code>, <code>memory_iters=4</code>.</p>
+<figure><img src="assets/sensitivity_analysis.png" alt="Sensitivity analysis"><figcaption>Sensitivity analysis</figcaption></figure>
+<p>This kernel is primarily a streaming memory-service workload until <code>compute_iters</code> becomes very large. Future GPUs or DAE/WASP-like architectures should improve:</p>
+<ul><li>effective DRAM bandwidth and memory-service efficiency;</li></ul>
+<ul><li>load scheduling that reduces long scoreboard stalls;</li></ul>
+<ul><li>enough resident warps to hide memory latency;</li></ul>
+<ul><li>register capacity only when larger per-thread batching reduces occupancy.</li></ul>
+<p>Increasing FPU TOPS helps mostly after the kernel reaches the compute-bound region. For the DAE/WASP direction, the most useful feature is better overlap of loads with scalar FMA work, because the workload has simple coalesced streams and little algorithmic L1/L2 reuse.</p></body></html>

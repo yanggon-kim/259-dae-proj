@@ -1,0 +1,6 @@
+$ /home/yanggon/02_SpMV_SpMM/12_WASP_codex/01_kernel/stream_fma_v6/stream_fma_v6 --n 1032192 --iters 16 --memory-iters 4 --warmup 2 --repeats 5
+
+device=NVIDIA GeForce RTX 5080  cc=12.0  n=1032192  iters=16  memory_iters=4  repeats=5  warmup=2
+CTAs=1008  threads/CTA=256  elements/CTA=1024  elements/thread=4  mapping=cta_tile_no_rounds
+stream_fma_v6 time_ms=  0.0070  global_GB/s= 2350.16  est_GFLOP/s=14394.75  AI= 6.125  max_abs=0.000e+00  max_rel=0.000e+00
+verification=PASS
