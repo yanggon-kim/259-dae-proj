@@ -20,6 +20,7 @@
 
 static constexpr int kBlockThreads = 1024;
 static constexpr int kProducerThreads = 512;
+static constexpr int kMaxRfqTiles = 16;
 
 struct Options {
     const char* mode = "baseline";
@@ -37,6 +38,54 @@ __host__ __device__ __forceinline__ int wrap_index(int value, int n) {
 
 __host__ __device__ __forceinline__ unsigned rotl32(unsigned x, unsigned s) {
     return (x << s) | (x >> (32 - s));
+}
+
+__host__ __device__ __forceinline__ float producer_stream_tile_v10(
+    const float* __restrict__ a, const float* __restrict__ b,
+    const int* __restrict__ index, int i, int n, int iters, int tile) {
+    int base = i + tile * 911;
+    int p0 = wrap_index(base, n);
+    int p1 = wrap_index(base + 97, n);
+    int p2 = wrap_index(base + 193, n);
+    int p3 = wrap_index(base + 389, n);
+
+    int j0 = index[p0];
+    int j1 = index[p1];
+    int j2 = index[p2];
+    int j3 = index[p3];
+
+    float l0 = a[j0];
+    float l1 = b[j1];
+    float l2 = a[j2];
+    float l3 = b[j3];
+
+    unsigned x0 = (static_cast<unsigned>(i) ^ 0x243f6a88u) +
+                  static_cast<unsigned>(tile * 977u) ^
+                  static_cast<unsigned>(j0 << 1);
+    unsigned x1 = (static_cast<unsigned>(i * 1664525u) ^ 0x85a308d3u) +
+                  static_cast<unsigned>(j1 + tile * 131u);
+    unsigned x2 = static_cast<unsigned>(base + 1013904223u) ^
+                  static_cast<unsigned>(j2 << 2);
+    unsigned x3 = static_cast<unsigned>((base << 4) + 17) ^
+                  static_cast<unsigned>(j3);
+
+#pragma unroll 4
+    for (int r = 0; r < iters; ++r) {
+        x0 = (x0 + 0x9e3779b9u + static_cast<unsigned>(r + tile)) ^
+             rotl32(x0, 5);
+        x1 = (x1 ^ 0x85ebca6bu) + rotl32(x1, 7) +
+             static_cast<unsigned>(r * 17 + tile);
+        x2 = (x2 + 0xc2b2ae35u) ^ rotl32(x2, 11) ^
+             static_cast<unsigned>(j0 + tile);
+        x3 = (x3 ^ (x3 >> 13)) + 0x27d4eb2du +
+             static_cast<unsigned>(j1 + r + tile);
+    }
+
+    unsigned carry0 = x0 ^ x2;
+    unsigned carry1 = x1 + x3;
+    float out0 = (l0 + l1) + static_cast<float>(carry0 & 1023u) * 0.000013f;
+    float out1 = (l2 + l3) + static_cast<float>(carry1 & 1023u) * 0.000017f;
+    return out0 + out1;
 }
 
 __host__ __device__ __forceinline__ float producer_stream_v10(
@@ -161,6 +210,18 @@ __host__ __device__ __forceinline__ float reduce_accumulators_v10(
         PC_PAIR_V10_FFMA_STEP();                                                \
     } while (0)
 
+#define PC_PAIR_V10_RFQ_QUEUE_STEP(queue_value, tile_index)                     \
+    do {                                                                       \
+        float q = (queue_value) * 0.000244140625f +                             \
+                  static_cast<float>(iters) * 0.00003125f;                     \
+        q = fmaf(q, 0.99973f,                                                   \
+                 0.00017f * static_cast<float>((tile_index) + 1));              \
+        a8 = fmaf(a8, 1.00001f, q);                                             \
+        a9 = fmaf(a9, 0.99991f, q);                                             \
+        a10 = fmaf(a10, 1.00003f, q);                                           \
+        a11 = fmaf(a11, 0.99997f, q * 0.5f);                                    \
+    } while (0)
+
 __host__ __device__ __forceinline__ float consumer_stream_h200_v10(int iters,
                                                                   int tiles) {
     PC_PAIR_V10_INIT_ACCUMULATORS();
@@ -198,9 +259,31 @@ __host__ __device__ __forceinline__ float consumer_stream_queue_v10(
                                   a11, a12, a13, a14, a15);
 }
 
+__host__ __device__ __forceinline__ void consumer_stream_rfq_tile_v10(
+    int iters, int tile, float queue_value, float& a0, float& a1, float& a2,
+    float& a3, float& a4, float& a5, float& a6, float& a7, float& a8,
+    float& a9, float& a10, float& a11, float& a12, float& a13, float& a14,
+    float& a15) {
+    PC_PAIR_V10_RFQ_QUEUE_STEP(queue_value, tile);
+    PC_PAIR_V10_DUAL_TILE();
+}
+
+__host__ __device__ __forceinline__ float consumer_stream_rfq_v10(
+    int iters, int tiles, const float* queue_values, int stride) {
+    PC_PAIR_V10_INIT_ACCUMULATORS();
+    for (int t = 0; t < tiles; ++t) {
+        consumer_stream_rfq_tile_v10(
+            iters, t, queue_values[t * stride], a0, a1, a2, a3, a4, a5, a6,
+            a7, a8, a9, a10, a11, a12, a13, a14, a15);
+    }
+    return reduce_accumulators_v10(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10,
+                                  a11, a12, a13, a14, a15);
+}
+
 #undef PC_PAIR_V10_INIT_ACCUMULATORS
 #undef PC_PAIR_V10_H200_TILE
 #undef PC_PAIR_V10_DUAL_TILE
+#undef PC_PAIR_V10_RFQ_QUEUE_STEP
 #undef PC_PAIR_V10_FFMA_STEP
 
 extern "C" __global__ void pc_pair_v10_baseline_kernel(
@@ -292,6 +375,65 @@ void pc_pair_v10_queue_dual_kernel(const float* __restrict__ a,
     }
 }
 
+extern "C" __global__ __launch_bounds__(kBlockThreads, 1)
+void pc_pair_v10_rfq_stream_dual_kernel(const float* __restrict__ a,
+                                        const float* __restrict__ b,
+                                        const int* __restrict__ index,
+                                        float* __restrict__ producer_out,
+                                        float* __restrict__ consumer_out, int n,
+                                        int iters, int tiles) {
+    __shared__ float queue[kMaxRfqTiles * kProducerThreads];
+    int role_tid = threadIdx.x & (kProducerThreads - 1);
+    int i = blockIdx.x * kProducerThreads + role_tid;
+    bool active = i < n;
+
+    if (threadIdx.x < kProducerThreads) {
+        float sum = 0.0f;
+        for (int t = 0; t < tiles; ++t) {
+            float value = active ? producer_stream_tile_v10(a, b, index, i, n,
+                                                            iters, t)
+                                 : 0.0f;
+            queue[t * kProducerThreads + role_tid] = value;
+            sum += value;
+            __syncthreads();
+        }
+        if (active) producer_out[i] = sum * (1.0f / static_cast<float>(tiles));
+    } else {
+        float a0 = 0.125000f;
+        float a1 = 0.250000f;
+        float a2 = 0.375000f;
+        float a3 = 0.500000f;
+        float a4 = 0.625000f;
+        float a5 = 0.750000f;
+        float a6 = 0.875000f;
+        float a7 = 1.000000f;
+        float a8 = 0.093750f;
+        float a9 = 0.187500f;
+        float a10 = 0.281250f;
+        float a11 = 0.343750f;
+        float a12 = 0.437500f;
+        float a13 = 0.531250f;
+        float a14 = 0.625000f;
+        float a15 = 0.718750f;
+        for (int t = 0; t < tiles; ++t) {
+            __syncthreads();
+            float q = queue[t * kProducerThreads + role_tid];
+            consumer_stream_rfq_tile_v10(iters, t, q, a0, a1, a2, a3, a4, a5,
+                                         a6, a7, a8, a9, a10, a11, a12, a13,
+                                         a14, a15);
+        }
+        float value = reduce_accumulators_v10(a0, a1, a2, a3, a4, a5, a6, a7,
+                                             a8, a9, a10, a11, a12, a13, a14,
+                                             a15);
+        unsigned zero_dep;
+        asm volatile("and.b32 %0, %1, 0;" : "=r"(zero_dep)
+                                             : "r"(__float_as_uint(value)));
+        int out_i = blockIdx.x * kProducerThreads + role_tid +
+                    static_cast<int>(zero_dep);
+        if (out_i < n) consumer_out[out_i] = value;
+    }
+}
+
 int parse_int(const char* text, const char* name) {
     char* end = nullptr;
     long value = std::strtol(text, &end, 10);
@@ -335,10 +477,11 @@ Options parse_options(int argc, char** argv) {
     if (std::strcmp(opt.mode, "baseline") != 0 &&
         std::strcmp(opt.mode, "split_h200") != 0 &&
         std::strcmp(opt.mode, "stream_dual") != 0 &&
-        std::strcmp(opt.mode, "queue_dual") != 0) {
+        std::strcmp(opt.mode, "queue_dual") != 0 &&
+        std::strcmp(opt.mode, "rfq_stream_dual") != 0) {
         std::fprintf(stderr,
-                     "--mode must be baseline, split_h200, stream_dual, or "
-                     "queue_dual\n");
+                     "--mode must be baseline, split_h200, stream_dual, "
+                     "queue_dual, or rfq_stream_dual\n");
         std::exit(EXIT_FAILURE);
     }
     if (opt.n <= 0 || opt.iters <= 0 || opt.tiles <= 0 || opt.repeats <= 0) {
@@ -346,11 +489,19 @@ Options parse_options(int argc, char** argv) {
         std::exit(EXIT_FAILURE);
     }
     if ((std::strcmp(opt.mode, "stream_dual") == 0 ||
-         std::strcmp(opt.mode, "queue_dual") == 0) &&
+         std::strcmp(opt.mode, "queue_dual") == 0 ||
+         std::strcmp(opt.mode, "rfq_stream_dual") == 0) &&
         opt.iters != 8) {
         std::fprintf(stderr,
-                     "stream_dual and queue_dual specialize the FFMA tile for "
-                     "--iters 8\n");
+                     "stream_dual, queue_dual, and rfq_stream_dual specialize "
+                     "the FFMA tile for --iters 8\n");
+        std::exit(EXIT_FAILURE);
+    }
+    if (std::strcmp(opt.mode, "rfq_stream_dual") == 0 &&
+        opt.tiles > kMaxRfqTiles) {
+        std::fprintf(stderr,
+                     "rfq_stream_dual requires --tiles <= %d\n",
+                     kMaxRfqTiles);
         std::exit(EXIT_FAILURE);
     }
     return opt;
@@ -369,15 +520,28 @@ void initialize(std::vector<float>& a, std::vector<float>& b,
 void reference(const std::vector<float>& a, const std::vector<float>& b,
                const std::vector<int>& index, std::vector<float>& producer_ref,
                std::vector<float>& consumer_ref, int iters, int tiles,
-               bool queue_dual) {
+               bool queue_dual, bool rfq_stream_dual) {
     int n = static_cast<int>(a.size());
+    std::vector<float> queue_values(tiles);
     for (int i = 0; i < n; ++i) {
-        producer_ref[i] = producer_stream_v10(a.data(), b.data(), index.data(),
-                                             i, n, iters, tiles);
-        consumer_ref[i] =
-            queue_dual ? consumer_stream_queue_v10(iters, tiles,
-                                                   producer_ref[i])
-                       : consumer_stream_h200_v10(iters, tiles);
+        if (rfq_stream_dual) {
+            float sum = 0.0f;
+            for (int t = 0; t < tiles; ++t) {
+                queue_values[t] = producer_stream_tile_v10(
+                    a.data(), b.data(), index.data(), i, n, iters, t);
+                sum += queue_values[t];
+            }
+            producer_ref[i] = sum * (1.0f / static_cast<float>(tiles));
+            consumer_ref[i] =
+                consumer_stream_rfq_v10(iters, tiles, queue_values.data(), 1);
+        } else {
+            producer_ref[i] = producer_stream_v10(
+                a.data(), b.data(), index.data(), i, n, iters, tiles);
+            consumer_ref[i] =
+                queue_dual ? consumer_stream_queue_v10(iters, tiles,
+                                                       producer_ref[i])
+                           : consumer_stream_h200_v10(iters, tiles);
+        }
     }
 }
 
@@ -399,8 +563,9 @@ int main(int argc, char** argv) {
     std::vector<float> producer_out(opt.n, 0.0f), consumer_out(opt.n, 0.0f);
     initialize(a, b, index);
     bool queue_dual = std::strcmp(opt.mode, "queue_dual") == 0;
+    bool rfq_stream_dual = std::strcmp(opt.mode, "rfq_stream_dual") == 0;
     reference(a, b, index, producer_ref, consumer_ref, opt.iters, opt.tiles,
-              queue_dual);
+              queue_dual, rfq_stream_dual);
 
     float *da, *db, *dproducer, *dconsumer;
     int* dindex;
@@ -426,7 +591,11 @@ int main(int argc, char** argv) {
                      : (opt.n + block - 1) / block;
 
     auto launch = [&]() {
-        if (queue_dual) {
+        if (rfq_stream_dual) {
+            pc_pair_v10_rfq_stream_dual_kernel<<<grid, block>>>(
+                da, db, dindex, dproducer, dconsumer, opt.n, opt.iters,
+                opt.tiles);
+        } else if (queue_dual) {
             pc_pair_v10_queue_dual_kernel<<<grid, block>>>(
                 da, db, dindex, dproducer, dconsumer, opt.n, opt.iters,
                 opt.tiles);
