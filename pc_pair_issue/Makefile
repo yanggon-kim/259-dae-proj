@@ -9,12 +9,13 @@ TARGET_V6 := pc_pair_issue_v6
 TARGET_V7 := pc_pair_issue_v7
 TARGET_V8 := pc_pair_issue_v8
 TARGET_V9 := pc_pair_issue_v9
+TARGET_V10 := pc_pair_issue_v10
 
 NVCCFLAGS ?= -O3 -std=c++14 -arch=$(ARCH) -cudart shared
 
-.PHONY: all run-baseline run-split run-v2-baseline run-v2-split run-v3-baseline run-v3-split run-v4-baseline run-v4-split run-v5-baseline run-v5-split run-v6-baseline run-v6-split-h200 run-v6-split-dual run-v7-baseline run-v7-split-h200 run-v7-stream-dual run-v8-baseline run-v8-split-h200 run-v8-stream-dual run-v9-baseline run-v9-split-h200 run-v9-stream-dual ptx ptx-v2 ptx-v3 ptx-v4 ptx-v5 ptx-v6 ptx-v7 ptx-v8 ptx-v9 clean
+.PHONY: all run-baseline run-split run-v2-baseline run-v2-split run-v3-baseline run-v3-split run-v4-baseline run-v4-split run-v5-baseline run-v5-split run-v6-baseline run-v6-split-h200 run-v6-split-dual run-v7-baseline run-v7-split-h200 run-v7-stream-dual run-v8-baseline run-v8-split-h200 run-v8-stream-dual run-v9-baseline run-v9-split-h200 run-v9-stream-dual run-v10-baseline run-v10-split-h200 run-v10-stream-dual run-v10-queue-dual ptx ptx-v2 ptx-v3 ptx-v4 ptx-v5 ptx-v6 ptx-v7 ptx-v8 ptx-v9 ptx-v10 clean
 
-all: $(TARGET) $(TARGET_V2) $(TARGET_V3) $(TARGET_V4) $(TARGET_V5) $(TARGET_V6) $(TARGET_V7) $(TARGET_V8) $(TARGET_V9)
+all: $(TARGET) $(TARGET_V2) $(TARGET_V3) $(TARGET_V4) $(TARGET_V5) $(TARGET_V6) $(TARGET_V7) $(TARGET_V8) $(TARGET_V9) $(TARGET_V10)
 
 $(TARGET): pc_pair_issue.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
@@ -41,6 +42,9 @@ $(TARGET_V8): pc_pair_issue_v8.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 $(TARGET_V9): pc_pair_issue_v9.cu
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+$(TARGET_V10): pc_pair_issue_v10.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 run-baseline: $(TARGET)
@@ -109,6 +113,18 @@ run-v9-split-h200: $(TARGET_V9)
 run-v9-stream-dual: $(TARGET_V9)
 	./$(TARGET_V9) --mode stream_dual --n 4096 --iters 8 --tiles 32 --warmup 0 --repeats 1
 
+run-v10-baseline: $(TARGET_V10)
+	./$(TARGET_V10) --mode baseline --n 4096 --iters 8 --tiles 32 --warmup 0 --repeats 1
+
+run-v10-split-h200: $(TARGET_V10)
+	./$(TARGET_V10) --mode split_h200 --n 4096 --iters 8 --tiles 32 --warmup 0 --repeats 1
+
+run-v10-stream-dual: $(TARGET_V10)
+	./$(TARGET_V10) --mode stream_dual --n 4096 --iters 8 --tiles 32 --warmup 0 --repeats 1
+
+run-v10-queue-dual: $(TARGET_V10)
+	./$(TARGET_V10) --mode queue_dual --n 4096 --iters 8 --tiles 32 --warmup 0 --repeats 1
+
 ptx: pc_pair_issue.cu
 	$(NVCC) $(NVCCFLAGS) -ptx -o pc_pair_issue.ptx $<
 
@@ -136,5 +152,8 @@ ptx-v8: pc_pair_issue_v8.cu
 ptx-v9: pc_pair_issue_v9.cu
 	$(NVCC) $(NVCCFLAGS) -ptx -o pc_pair_issue_v9.ptx $<
 
+ptx-v10: pc_pair_issue_v10.cu
+	$(NVCC) $(NVCCFLAGS) -ptx -o pc_pair_issue_v10.ptx $<
+
 clean:
-	rm -f $(TARGET) $(TARGET_V2) $(TARGET_V3) $(TARGET_V4) $(TARGET_V5) $(TARGET_V6) $(TARGET_V7) $(TARGET_V8) $(TARGET_V9) pc_pair_issue.ptx pc_pair_issue_v2.ptx pc_pair_issue_v3.ptx pc_pair_issue_v4.ptx pc_pair_issue_v5.ptx pc_pair_issue_v6.ptx pc_pair_issue_v7.ptx pc_pair_issue_v8.ptx pc_pair_issue_v9.ptx
+	rm -f $(TARGET) $(TARGET_V2) $(TARGET_V3) $(TARGET_V4) $(TARGET_V5) $(TARGET_V6) $(TARGET_V7) $(TARGET_V8) $(TARGET_V9) $(TARGET_V10) pc_pair_issue.ptx pc_pair_issue_v2.ptx pc_pair_issue_v3.ptx pc_pair_issue_v4.ptx pc_pair_issue_v5.ptx pc_pair_issue_v6.ptx pc_pair_issue_v7.ptx pc_pair_issue_v8.ptx pc_pair_issue_v9.ptx pc_pair_issue_v10.ptx
