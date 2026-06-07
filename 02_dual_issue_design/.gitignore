@@ -1,0 +1,3 @@
+runs/
+kernel_reference/stream_fma_v6_v2_m4_c128_cta512
+kernel_reference/stream_fma_v6_v2_m4_c128_cta512.ptx

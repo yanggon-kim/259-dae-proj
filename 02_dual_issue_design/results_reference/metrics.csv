@@ -1,0 +1,5 @@
+implementation,log,n,cycles,instructions,issued_cta,occupancy_pct,pair_attempts,pair_successes,scoreboard_failures,no_producer_windows,no_consumer_windows,regset_busy_failures,pipeline_busy_failures,both_ready_cycles,verification,speedup_vs_ws_base
+WS_BASE,results_reference/ws_base_full_run.log,524288,54110,281149440,512,42.1957,0,0,0,0,0,0,0,0,PASS,1.000
+DUAL_ISSUE_PC,results_reference/dual_issue_pc_full_run.log,524288,59165,281149440,512,37.2108,25507328,188694,17707793,6611605,0,89731,0,238404,PASS,0.915
+WS_BASE_SCOUT,results_reference/ws_base_scout_n16384.log,16384,28201,8785920,16,11.7333,0,0,0,0,0,0,0,0,PASS,1.000
+DUAL_ISSUE_PC_SCOUT,results_reference/dual_issue_pc_scout_n16384.log,16384,28101,8785920,16,8.7513,1472992,2620,577171,883053,0,1258,0,2949,PASS,1.004

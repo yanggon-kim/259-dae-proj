@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <defs>
+    <style>
+      .title { font: 700 30px Arial, sans-serif; fill: #172033; }
+      .h1 { font: 700 22px Arial, sans-serif; fill: #172033; }
+      .h2 { font: 700 18px Arial, sans-serif; fill: #172033; }
+      .body { font: 15px Arial, sans-serif; fill: #243044; }
+      .small { font: 13px Arial, sans-serif; fill: #344054; }
+      .tiny { font: 12px Arial, sans-serif; fill: #344054; }
+      .outer { fill: #f7f9fc; stroke: #1d2939; stroke-width: 3; }
+      .pb { fill: #eef5ff; stroke: #2563eb; stroke-width: 2.5; }
+      .unit { fill: #ffffff; stroke: #667085; stroke-width: 2; }
+      .producer { fill: #ecfdf3; stroke: #079455; stroke-width: 2; }
+      .consumer { fill: #fff4ed; stroke: #f97316; stroke-width: 2; }
+      .check { fill: #fef7c3; stroke: #ca8a04; stroke-width: 2; }
+      .fu { fill: #f4f3ff; stroke: #7c3aed; stroke-width: 2; }
+      .rfq { fill: #e0f2fe; stroke: #0284c7; stroke-width: 2; }
+      .arrow { stroke: #344054; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .arrow2 { stroke: #079455; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .arrow3 { stroke: #f97316; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #667085; stroke-width: 2; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#344054"/>
+    </marker>
+  </defs>
+
+  <rect x="35" y="35" width="1330" height="830" rx="14" class="outer"/>
+  <text x="60" y="78" class="title">Producer/Consumer Dual-Issue SM Design</text>
+  <text x="60" y="108" class="body">One SM contains multiple processing blocks. Each processing block can issue one producer warp and one consumer warp in the same cycle when all legality checks pass.</text>
+
+  <rect x="70" y="145" width="270" height="130" rx="10" class="pb" opacity="0.55"/>
+  <text x="95" y="182" class="h2">Processing Block 0</text>
+  <text x="95" y="212" class="small">Same scheduler logic as detailed block</text>
+  <text x="95" y="238" class="small">Producer/consumer role-aware issue</text>
+
+  <rect x="70" y="305" width="270" height="130" rx="10" class="pb" opacity="0.55"/>
+  <text x="95" y="342" class="h2">Processing Block 1</text>
+  <text x="95" y="372" class="small">Independent warp scheduler</text>
+  <text x="95" y="398" class="small">Independent dispatch resources</text>
+
+  <rect x="70" y="465" width="270" height="130" rx="10" class="pb" opacity="0.55"/>
+  <text x="95" y="502" class="h2">Processing Block 2</text>
+  <text x="95" y="532" class="small">Same producer/consumer checks</text>
+  <text x="95" y="558" class="small">Same functional-unit constraints</text>
+
+  <rect x="70" y="625" width="270" height="130" rx="10" class="pb" opacity="0.55"/>
+  <text x="95" y="662" class="h2">Processing Block 3</text>
+  <text x="95" y="692" class="small">Same RFQ token interaction</text>
+  <text x="95" y="718" class="small">Same result/stat counters</text>
+
+  <rect x="385" y="145" width="950" height="720" rx="14" class="pb"/>
+  <text x="420" y="185" class="h1">Detailed Processing Block / Sub-core</text>
+  <text x="420" y="212" class="body">GPGPU-Sim implementation extends the scheduler unit with producer/consumer pairing, readiness checks, and dual dispatch accounting.</text>
+
+  <rect x="425" y="250" width="230" height="108" rx="8" class="unit"/>
+  <text x="448" y="282" class="h2">Resident Warp Pool</text>
+  <text x="448" y="310" class="small">CTA-local role split</text>
+  <text x="448" y="334" class="small">warps 0-3: producer</text>
+  <text x="448" y="352" class="small">warps 4-7: consumer</text>
+
+  <rect x="425" y="395" width="230" height="95" rx="8" class="producer"/>
+  <text x="448" y="428" class="h2">Producer Candidate</text>
+  <text x="448" y="456" class="small">load / address / INT work</text>
+  <text x="448" y="478" class="small">RFQ send at producer sync</text>
+
+  <rect x="425" y="530" width="230" height="95" rx="8" class="consumer"/>
+  <text x="448" y="563" class="h2">Consumer Candidate</text>
+  <text x="448" y="591" class="small">RFQ wait at consumer sync</text>
+  <text x="448" y="613" class="small">FMA / compute work</text>
+
+  <rect x="715" y="265" width="255" height="85" rx="8" class="check"/>
+  <text x="737" y="298" class="h2">Scoreboard Check</text>
+  <text x="737" y="326" class="small">Operands ready, no RAW/WAW stall</text>
+  <text x="737" y="344" class="tiny">Rejects dependent or unavailable warps</text>
+
+  <rect x="715" y="385" width="255" height="90" rx="8" class="check"/>
+  <text x="737" y="418" class="h2">Pair Legality Check</text>
+  <text x="737" y="446" class="small">one producer + one consumer</text>
+  <text x="737" y="466" class="small">different compatible FU pipelines</text>
+
+  <rect x="715" y="515" width="255" height="90" rx="8" class="check"/>
+  <text x="737" y="548" class="h2">Structural Check</text>
+  <text x="737" y="576" class="small">dispatch reg-set available</text>
+  <text x="737" y="596" class="small">pipeline/register ports not busy</text>
+
+  <rect x="715" y="645" width="255" height="78" rx="8" class="unit"/>
+  <text x="737" y="678" class="h2">Dual-Issue Selector</text>
+  <text x="737" y="706" class="small">issue pair or fall back to single issue</text>
+
+  <rect x="1040" y="250" width="250" height="105" rx="8" class="fu"/>
+  <text x="1065" y="283" class="h2">Producer FU Path</text>
+  <text x="1065" y="311" class="small">LSU / INT / address generation</text>
+  <text x="1065" y="333" class="small">output register set</text>
+
+  <rect x="1040" y="405" width="250" height="105" rx="8" class="fu"/>
+  <text x="1065" y="438" class="h2">Consumer FU Path</text>
+  <text x="1065" y="466" class="small">FP32 / FMA / compute pipe</text>
+  <text x="1065" y="488" class="small">output register set</text>
+
+  <rect x="1040" y="565" width="250" height="95" rx="8" class="rfq"/>
+  <text x="1065" y="598" class="h2">RFQ Token Handoff</text>
+  <text x="1065" y="626" class="small">producer sync sends token</text>
+  <text x="1065" y="648" class="small">consumer sync waits for token</text>
+
+  <rect x="1040" y="705" width="250" height="72" rx="8" class="unit"/>
+  <text x="1065" y="738" class="h2">Counters / Diagnostics</text>
+  <text x="1065" y="764" class="small">pair success, scoreboard, regset, no-pair</text>
+
+  <path d="M655 304 C680 304 690 304 715 304" class="arrow"/>
+  <path d="M655 443 C680 443 690 430 715 430" class="arrow2"/>
+  <path d="M655 578 C680 578 690 560 715 560" class="arrow3"/>
+  <path d="M842 350 L842 385" class="arrow"/>
+  <path d="M842 475 L842 515" class="arrow"/>
+  <path d="M842 605 L842 645" class="arrow"/>
+  <path d="M970 684 C1010 684 1010 304 1040 304" class="arrow2"/>
+  <path d="M970 684 C1010 684 1010 458 1040 458" class="arrow3"/>
+  <path d="M1165 355 L1165 565" class="dash"/>
+  <path d="M1165 565 L1165 510" class="dash"/>
+  <path d="M1290 741 C1320 741 1320 690 970 690" class="dash"/>
+
+  <text x="420" y="820" class="small">Legal pair: one ready producer warp + one ready consumer warp, no scoreboard dependency, compatible functional units, and available dispatch/output resources.</text>
+  <text x="420" y="844" class="small">Contradictory finding: the mechanism issues pairs, but the full stream-FMA workload has too few same-cycle legal producer/consumer instruction pairs to overcome scheduling and RFQ overheads.</text>
+</svg>
