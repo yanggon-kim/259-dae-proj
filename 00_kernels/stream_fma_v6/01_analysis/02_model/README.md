@@ -25,12 +25,12 @@ TOPS = ops / predicted_time / 1e12
 compares predictions with the existing NCU sweeps and can refresh those sweeps:
 
 ```bash
-python3 01_kernel/stream_fma_v6/01_analysis/02_model/stream_fma_v6_model.py \
+python3 00_kernels/stream_fma_v6/01_analysis/02_model/stream_fma_v6_model.py \
   --n 1032192 --iters 16 --memory-iters 4
 
-python3 01_kernel/stream_fma_v6/01_analysis/02_model/validate_v6_model.py
+python3 00_kernels/stream_fma_v6/01_analysis/02_model/validate_v6_model.py
 
-python3 01_kernel/stream_fma_v6/01_analysis/02_model/validate_v6_model.py \
+python3 00_kernels/stream_fma_v6/01_analysis/02_model/validate_v6_model.py \
   --refresh-ncu
 ```
 

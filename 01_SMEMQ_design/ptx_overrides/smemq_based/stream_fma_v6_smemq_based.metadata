@@ -1,0 +1,5 @@
+num_pipeline_stages = 2
+producer_warps_per_cta = 4
+queues_per_original_warp = 1
+payload_words_per_lane = 3
+element_bits = 96

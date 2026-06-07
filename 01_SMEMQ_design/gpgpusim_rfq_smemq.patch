@@ -1,0 +1,2422 @@
+diff --git a/libcuda/cuda_runtime_api.cc b/libcuda/cuda_runtime_api.cc
+index 3574fc1..5ec7494 100644
+--- a/libcuda/cuda_runtime_api.cc
++++ b/libcuda/cuda_runtime_api.cc
+@@ -3189,32 +3189,65 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
+     app_binary = std::string(pytorch_bin);
+   }
+ 
+-  // only want file names
+-  snprintf(command, 1000,
+-           "$CUDA_INSTALL_PATH/bin/cuobjdump -lptx %s  | cut -d \":\" -f 2 | "
+-           "awk '{$1=$1}1' > %s",
+-           app_binary.c_str(), ptx_list_file_name);
+-  if (system(command) != 0) {
+-    printf("WARNING: Failed to execute cuobjdump to get list of ptx files \n");
+-    exit(0);
+-  }
+-  if (!gpgpu_ctx->device_runtime->g_cdp_enabled) {
+-    // based on the list above, dump ptx files individually. Format of dumped
+-    // ptx file is prog_name.unique_no.sm_<>.ptx
+-
+-    std::ifstream infile(ptx_list_file_name);
+-    std::string line;
+-    while (std::getline(infile, line)) {
+-      // int pos = line.find(std::string(get_app_binary_name(app_binary)));
+-      const char *ptx_file = line.c_str();
+-      printf("Extracting specific PTX file named %s \n", ptx_file);
+-      snprintf(command, 1000, "$CUDA_INSTALL_PATH/bin/cuobjdump -xptx %s %s",
+-               ptx_file, app_binary.c_str());
+-      if (system(command) != 0) {
+-        printf("ERROR: command: %s failed \n", command);
+-        exit(0);
++  const char *override_ptx_name = getenv("PTX_SIM_KERNELFILE");
++  const char *use_ptx_file = getenv("PTX_SIM_USE_PTX_FILE");
++  bool use_ptx_override =
++      override_ptx_name != NULL && use_ptx_file != NULL &&
++      strlen(override_ptx_name) > 0 && strlen(use_ptx_file) > 0;
++  if (use_ptx_override) {
++    unsigned forced_capability = context->get_device()
++                                     ->get_gpgpu()
++                                     ->get_config()
++                                     .get_forced_max_capability();
++    if (forced_capability == 0) forced_capability = 70;
++    char override_output_name[1024];
++    snprintf(override_output_name, 1024, "%s.1.sm_%u.ptx",
++             get_app_binary_name(app_binary), forced_capability);
++    printf(
++        "GPGPU-Sim PTX: using override PTX '%s' as extracted PTX '%s'\n",
++        override_ptx_name, override_output_name);
++
++    std::ifstream override_in(override_ptx_name);
++    if (!override_in.is_open()) {
++      printf("ERROR: could not open PTX override file %s\n", override_ptx_name);
++      exit(1);
++    }
++    std::ofstream override_out(override_output_name);
++    override_out << override_in.rdbuf();
++    override_out.close();
++
++    std::ofstream ptx_list(ptx_list_file_name);
++    ptx_list << override_output_name << std::endl;
++    ptx_list.close();
++    context->no_of_ptx++;
++  } else {
++    // only want file names
++    snprintf(command, 1000,
++             "$CUDA_INSTALL_PATH/bin/cuobjdump -lptx %s  | cut -d \":\" -f 2 | "
++             "awk '{$1=$1}1' > %s",
++             app_binary.c_str(), ptx_list_file_name);
++    if (system(command) != 0) {
++      printf("WARNING: Failed to execute cuobjdump to get list of ptx files \n");
++      exit(0);
++    }
++    if (!gpgpu_ctx->device_runtime->g_cdp_enabled) {
++      // based on the list above, dump ptx files individually. Format of dumped
++      // ptx file is prog_name.unique_no.sm_<>.ptx
++
++      std::ifstream infile(ptx_list_file_name);
++      std::string line;
++      while (std::getline(infile, line)) {
++        // int pos = line.find(std::string(get_app_binary_name(app_binary)));
++        const char *ptx_file = line.c_str();
++        printf("Extracting specific PTX file named %s \n", ptx_file);
++        snprintf(command, 1000, "$CUDA_INSTALL_PATH/bin/cuobjdump -xptx %s %s",
++                 ptx_file, app_binary.c_str());
++        if (system(command) != 0) {
++          printf("ERROR: command: %s failed \n", command);
++          exit(0);
++        }
++        context->no_of_ptx++;
+       }
+-      context->no_of_ptx++;
+     }
+   }
+ 
+diff --git a/src/abstract_hardware_model.h b/src/abstract_hardware_model.h
+index 98a4039..2c7395b 100644
+--- a/src/abstract_hardware_model.h
++++ b/src/abstract_hardware_model.h
+@@ -1073,6 +1073,24 @@ class warp_inst_t : public inst_t {
+     m_is_depbar = false;
+ 
+     m_depbar_group_no = 0;
++    m_wasp_rfq_load = false;
++    m_wasp_rfq_move = false;
++    m_wasp_rfq_queue_id = 0;
++    m_wasp_rfq_payload_words_per_lane = 0;
++    m_wasp_rfq_token_valid = false;
++    m_wasp_rfq_token_cta_hw_id = 0;
++    m_wasp_rfq_token_original_warp_id = 0;
++    m_wasp_rfq_token_slot_index = 0;
++    m_wasp_rfq_token_sequence = 0;
++    m_smemq_load = false;
++    m_smemq_move = false;
++    m_smemq_queue_id = 0;
++    m_smemq_payload_words_per_lane = 0;
++    m_smemq_token_valid = false;
++    m_smemq_token_cta_hw_id = 0;
++    m_smemq_token_original_warp_id = 0;
++    m_smemq_token_slot_index = 0;
++    m_smemq_token_sequence = 0;
+   }
+   warp_inst_t(const core_config *config) {
+     m_uid = 0;
+@@ -1094,6 +1112,24 @@ class warp_inst_t : public inst_t {
+     m_is_depbar = false;
+ 
+     m_depbar_group_no = 0;
++    m_wasp_rfq_load = false;
++    m_wasp_rfq_move = false;
++    m_wasp_rfq_queue_id = 0;
++    m_wasp_rfq_payload_words_per_lane = 0;
++    m_wasp_rfq_token_valid = false;
++    m_wasp_rfq_token_cta_hw_id = 0;
++    m_wasp_rfq_token_original_warp_id = 0;
++    m_wasp_rfq_token_slot_index = 0;
++    m_wasp_rfq_token_sequence = 0;
++    m_smemq_load = false;
++    m_smemq_move = false;
++    m_smemq_queue_id = 0;
++    m_smemq_payload_words_per_lane = 0;
++    m_smemq_token_valid = false;
++    m_smemq_token_cta_hw_id = 0;
++    m_smemq_token_original_warp_id = 0;
++    m_smemq_token_slot_index = 0;
++    m_smemq_token_sequence = 0;
+   }
+   virtual ~warp_inst_t() {}
+ 
+@@ -1286,6 +1322,26 @@ class warp_inst_t : public inst_t {
+   bool m_is_depbar;
+ 
+   unsigned int m_depbar_group_no;
++
++  bool m_wasp_rfq_load;
++  bool m_wasp_rfq_move;
++  unsigned m_wasp_rfq_queue_id;
++  unsigned m_wasp_rfq_payload_words_per_lane;
++  bool m_wasp_rfq_token_valid;
++  unsigned m_wasp_rfq_token_cta_hw_id;
++  unsigned m_wasp_rfq_token_original_warp_id;
++  unsigned m_wasp_rfq_token_slot_index;
++  unsigned m_wasp_rfq_token_sequence;
++
++  bool m_smemq_load;
++  bool m_smemq_move;
++  unsigned m_smemq_queue_id;
++  unsigned m_smemq_payload_words_per_lane;
++  bool m_smemq_token_valid;
++  unsigned m_smemq_token_cta_hw_id;
++  unsigned m_smemq_token_original_warp_id;
++  unsigned m_smemq_token_slot_index;
++  unsigned m_smemq_token_sequence;
+ };
+ 
+ void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
+diff --git a/src/cuda-sim/cuda-sim.cc b/src/cuda-sim/cuda-sim.cc
+index d05549c..af988b7 100644
+--- a/src/cuda-sim/cuda-sim.cc
++++ b/src/cuda-sim/cuda-sim.cc
+@@ -36,6 +36,7 @@
+ #include "ptx_ir.h"
+ class ptx_recognizer;
+ typedef void *yyscan_t;
++#include <ctype.h>
+ #include <stdio.h>
+ #include <map>
+ #include <set>
+@@ -1074,6 +1075,18 @@ static unsigned datatype2size(unsigned data_type) {
+   return data_size;
+ }
+ 
++static unsigned wasp_queue_id_from_operand(const operand_info &op) {
++  if (op.is_literal()) return op.get_literal_value().u32;
++  if (op.is_reg() || op.is_label()) {
++    const std::string &name = op.name();
++    int i = (int)name.size() - 1;
++    while (i >= 0 && isdigit(name[i])) i--;
++    if (i + 1 < (int)name.size()) return (unsigned)atoi(name.c_str() + i + 1);
++  }
++  printf("GPGPU-Sim WASP queue: operand must be a literal id or qN name\n");
++  abort();
++}
++
+ void ptx_instruction::pre_decode() {
+   pc = m_PC;
+   isize = m_inst_size;
+@@ -1228,6 +1241,24 @@ void ptx_instruction::pre_decode() {
+   for (int i = 0; i < MAX_INPUT_VALUES; i++)
+     if (in[i] > 0) incount++;
+ 
++  if (m_wasp_rfq_load || m_wasp_rfq_move) {
++    const unsigned queue_operand = m_wasp_rfq_load ? 0 : 1;
++    assert(queue_operand < m_operands.size());
++    m_wasp_rfq_queue_id = wasp_queue_id_from_operand(m_operands[queue_operand]);
++  }
++
++  if (m_smemq_load || m_smemq_move) {
++    const unsigned queue_operand = m_smemq_load ? 0 : 1;
++    assert(queue_operand < m_operands.size());
++    m_smemq_queue_id = wasp_queue_id_from_operand(m_operands[queue_operand]);
++  }
++
++  if (m_wasp_rfq_load || m_smemq_load) {
++    memset(out, 0, sizeof(out));
++    std::fill_n(arch_reg.dst, MAX_REG_OPERANDS, -1);
++    outcount = 0;
++  }
++
+   // Get predicate
+   if (has_pred()) {
+     const operand_info &p = get_pred();
+@@ -1790,6 +1821,18 @@ int tensorcore_op(int inst_opcode) {
+   else
+     return 0;
+ }
++
++static void wasp_rfq_ld_exec(const ptx_instruction *pI,
++                             ptx_thread_info *thread, warp_inst_t &inst,
++                             unsigned lane_id);
++static void wasp_rfq_mov_exec(const ptx_instruction *pI,
++                              ptx_thread_info *thread, warp_inst_t &inst,
++                              unsigned lane_id);
++static void smemq_ld_exec(const ptx_instruction *pI, ptx_thread_info *thread,
++                          warp_inst_t &inst, unsigned lane_id);
++static void smemq_mov_exec(const ptx_instruction *pI, ptx_thread_info *thread,
++                           warp_inst_t &inst, unsigned lane_id);
++
+ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
+   bool skip = false;
+   int op_classification = 0;
+@@ -1854,11 +1897,32 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
+         }
+       }
+ 
++      bool wasp_rfq_handled = false;
++      if (pI->m_wasp_rfq_load) {
++        wasp_rfq_ld_exec(pI, this, inst, lane_id);
++        op_classification = 5;
++        wasp_rfq_handled = true;
++      } else if (pI->m_wasp_rfq_move) {
++        wasp_rfq_mov_exec(pI, this, inst, lane_id);
++        op_classification = 1;
++        wasp_rfq_handled = true;
++      } else if (pI->m_smemq_load) {
++        smemq_ld_exec(pI, this, inst, lane_id);
++        op_classification = 5;
++        wasp_rfq_handled = true;
++      } else if (pI->m_smemq_move) {
++        smemq_mov_exec(pI, this, inst, lane_id);
++        op_classification = 1;
++        wasp_rfq_handled = true;
++      }
++
+       // Tensorcore is warp synchronous operation. So these instructions needs
+       // to be executed only once. To make the simulation faster removing the
+       // redundant tensorcore operation
+-      if (!tensorcore_op(inst_opcode) ||
+-          ((tensorcore_op(inst_opcode)) && (lane_id == 0))) {
++      bool execute_functional =
++          !tensorcore_op(inst_opcode) ||
++          (tensorcore_op(inst_opcode) && (lane_id == 0));
++      if (!wasp_rfq_handled && execute_functional) {
+         switch (inst_opcode) {
+ #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
+   case OP:                                         \
+@@ -1918,7 +1982,12 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
+     memory_space_t insn_space = undefined_space;
+     _memory_op_t insn_memory_op = no_memory_op;
+     unsigned insn_data_size = 0;
+-    if ((pI->has_memory_read() || pI->has_memory_write())) {
++    if (pI->m_wasp_rfq_load || pI->m_smemq_load) {
++      insn_memaddr = inst.get_addr(lane_id);
++      insn_space = global_space;
++      insn_data_size = datatype2size(pI->get_type());
++      insn_memory_op = memory_load;
++    } else if ((pI->has_memory_read() || pI->has_memory_write())) {
+       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+         insn_memaddr = last_eaddr();
+         insn_space = last_space();
+@@ -2032,7 +2101,12 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
+     if (!skip) {
+       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+         inst.space = insn_space;
+-        inst.set_addr(lane_id, insn_memaddr);
++        const bool queue_tuple_load =
++            (pI->m_wasp_rfq_load &&
++             inst.m_wasp_rfq_payload_words_per_lane > 1) ||
++            (pI->m_smemq_load && inst.m_smemq_payload_words_per_lane > 1);
++        if (!queue_tuple_load)
++          inst.set_addr(lane_id, insn_memaddr);
+         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
+         assert(inst.memory_op == insn_memory_op);
+       }
+@@ -2055,6 +2129,118 @@ const struct gpgpu_ptx_sim_info *ptx_sim_kernel_info(
+   return kernel->get_kernel_info();
+ }
+ 
++static addr_t wasp_rfq_effective_address(const ptx_instruction *pI,
++                                         ptx_thread_info *thread,
++                                         const operand_info &src) {
++  ptx_reg_t addr_reg =
++      thread->get_operand_value(src, src, pI->get_type(), thread, 0);
++  addr_t addr = addr_reg.u64;
++  memory_space_t space = pI->get_space();
++  if (space.get_type() == generic_space) {
++    space = whichspace(addr);
++    if (space.get_type() == global_space) addr = generic_to_global(addr);
++  }
++  assert(space.get_type() == global_space);
++  return addr;
++}
++
++static void wasp_rfq_ld_exec(const ptx_instruction *pI,
++                             ptx_thread_info *thread, warp_inst_t &inst,
++                             unsigned lane_id) {
++  shader_core_ctx *shader = static_cast<shader_core_ctx *>(thread->get_core());
++  unsigned payload_words = inst.m_wasp_rfq_payload_words_per_lane;
++  if (payload_words == 0) payload_words = 1;
++  assert(payload_words <= MAX_ACCESSES_PER_INSN_PER_THREAD);
++  assert(pI->get_num_operands() >= payload_words + 1);
++
++  size_t size;
++  int basic_type;
++  type_info_key::type_decode(pI->get_type(), size, basic_type);
++  new_addr_type addrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
++
++  for (unsigned word = 0; word < payload_words; ++word) {
++    const operand_info &src = pI->operand_lookup(word + 1);
++    addr_t addr = wasp_rfq_effective_address(pI, thread, src);
++    ptx_reg_t data;
++    data.u64 = 0;
++    thread->get_global_memory()->read(addr, size / 8, &data.s64);
++    shader->wasp_rfq_functional_store_lane(inst, lane_id, word, data.u64);
++    addrs[word] = addr;
++  }
++  inst.set_addr(lane_id, addrs, payload_words);
++}
++
++static void wasp_rfq_mov_exec(const ptx_instruction *pI,
++                              ptx_thread_info *thread, warp_inst_t &inst,
++                              unsigned lane_id) {
++  shader_core_ctx *shader = static_cast<shader_core_ctx *>(thread->get_core());
++  unsigned payload_words = inst.m_wasp_rfq_payload_words_per_lane;
++  if (payload_words == 0) payload_words = 1;
++  assert(payload_words <= 4);
++
++  ptx_reg_t values[4];
++  for (unsigned word = 0; word < 4; ++word) values[word].u64 = 0;
++  for (unsigned word = 0; word < payload_words; ++word) {
++    values[word].u64 =
++        shader->wasp_rfq_functional_read_lane(inst, lane_id, word);
++  }
++
++  const operand_info &dst = pI->dst();
++  if (dst.is_vector()) {
++    thread->set_vector_operand_values(dst, values[0], values[1], values[2],
++                                      values[3]);
++  } else {
++    thread->set_operand_value(dst, values[0], pI->get_type(), thread, pI);
++  }
++}
++
++static void smemq_ld_exec(const ptx_instruction *pI, ptx_thread_info *thread,
++                          warp_inst_t &inst, unsigned lane_id) {
++  shader_core_ctx *shader = static_cast<shader_core_ctx *>(thread->get_core());
++  unsigned payload_words = inst.m_smemq_payload_words_per_lane;
++  if (payload_words == 0) payload_words = 1;
++  assert(payload_words <= MAX_ACCESSES_PER_INSN_PER_THREAD);
++  assert(pI->get_num_operands() >= payload_words + 1);
++
++  size_t size;
++  int basic_type;
++  type_info_key::type_decode(pI->get_type(), size, basic_type);
++  new_addr_type addrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
++
++  for (unsigned word = 0; word < payload_words; ++word) {
++    const operand_info &src = pI->operand_lookup(word + 1);
++    addr_t addr = wasp_rfq_effective_address(pI, thread, src);
++    ptx_reg_t data;
++    data.u64 = 0;
++    thread->get_global_memory()->read(addr, size / 8, &data.s64);
++    shader->smemq_functional_store_lane(inst, lane_id, word, data.u64);
++    addrs[word] = addr;
++  }
++  inst.set_addr(lane_id, addrs, payload_words);
++}
++
++static void smemq_mov_exec(const ptx_instruction *pI, ptx_thread_info *thread,
++                           warp_inst_t &inst, unsigned lane_id) {
++  shader_core_ctx *shader = static_cast<shader_core_ctx *>(thread->get_core());
++  unsigned payload_words = inst.m_smemq_payload_words_per_lane;
++  if (payload_words == 0) payload_words = 1;
++  assert(payload_words <= 4);
++
++  ptx_reg_t values[4];
++  for (unsigned word = 0; word < 4; ++word) values[word].u64 = 0;
++  for (unsigned word = 0; word < payload_words; ++word) {
++    values[word].u64 = shader->smemq_functional_read_lane(inst, lane_id, word);
++  }
++
++  const operand_info &dst = pI->dst();
++  if (dst.is_vector()) {
++    thread->set_vector_operand_values(dst, values[0], values[1], values[2],
++                                      values[3]);
++  } else {
++    thread->set_operand_value(dst, values[0], pI->get_type(), thread, pI);
++  }
++}
++
+ const warp_inst_t *gpgpu_context::ptx_fetch_inst(address_type pc) {
+   return pc_to_instruction(pc);
+ }
+diff --git a/src/cuda-sim/ptx.l b/src/cuda-sim/ptx.l
+index 0810ef6..e07769d 100644
+--- a/src/cuda-sim/ptx.l
++++ b/src/cuda-sim/ptx.l
+@@ -305,6 +305,8 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
+ \.v4	TC; return V4_TYPE;
+ 
+ \.half  TC; return HALF_OPTION; /* ptxplus */
++\.rfq   TC; return RFQ_OPTION; /* WASP Variant 3 RFQ pseudo modifier */
++\.smemq TC; return SMEMQ_OPTION; /* WASP Variant 3a shared-memory queue */
+ \.cc	TC; return EXTP_OPTION; /* extended precision option */
+ 
+ \.equ	TC; return EQU_OPTION;
+diff --git a/src/cuda-sim/ptx.y b/src/cuda-sim/ptx.y
+index 61183e8..5c928b3 100644
+--- a/src/cuda-sim/ptx.y
++++ b/src/cuda-sim/ptx.y
+@@ -174,6 +174,8 @@ class ptx_recognizer;
+ %token FTZ_OPTION
+ %token NEG_OPTION
+ %token SYNC_OPTION
++%token RFQ_OPTION
++%token SMEMQ_OPTION
+ %token RED_OPTION
+ %token ARRIVE_OPTION
+ %token ATOMIC_POPC
+@@ -475,6 +477,8 @@ option: type_spec
+ 	| wmma_spec 
+ 	| prmt_spec 
+ 	| SYNC_OPTION { recognizer->add_option(SYNC_OPTION); }
++	| RFQ_OPTION { recognizer->add_option(RFQ_OPTION); }
++	| SMEMQ_OPTION { recognizer->add_option(SMEMQ_OPTION); }
+ 	| ARRIVE_OPTION { recognizer->add_option(ARRIVE_OPTION); }
+ 	| RED_OPTION { recognizer->add_option(RED_OPTION); }
+ 	| UNI_OPTION { recognizer->add_option(UNI_OPTION); }
+diff --git a/src/cuda-sim/ptx_ir.cc b/src/cuda-sim/ptx_ir.cc
+index 4e500cc..0279eae 100644
+--- a/src/cuda-sim/ptx_ir.cc
++++ b/src/cuda-sim/ptx_ir.cc
+@@ -1250,6 +1250,8 @@ ptx_instruction::ptx_instruction(
+   m_atomic_spec = 0;
+   m_membar_level = 0;
+   m_inst_size = 8;  // bytes
++  bool saw_rfq_option = false;
++  bool saw_smemq_option = false;
+   int rr = 0;
+   std::list<int>::const_iterator i;
+   unsigned n = 1;
+@@ -1282,6 +1284,12 @@ ptx_instruction::ptx_instruction(
+   for (i = options.begin(); i != options.end(); i++, n++) {
+     int last_ptx_inst_option = *i;
+     switch (last_ptx_inst_option) {
++      case RFQ_OPTION:
++        saw_rfq_option = true;
++        break;
++      case SMEMQ_OPTION:
++        saw_smemq_option = true;
++        break;
+       case SYNC_OPTION:
+       case ARRIVE_OPTION:
+       case RED_OPTION:
+@@ -1450,6 +1458,19 @@ ptx_instruction::ptx_instruction(
+   }
+   m_scalar_type = scalar_type;
+   m_space_spec = space_spec;
++  if (saw_rfq_option) {
++    assert(!saw_smemq_option);
++    assert(opcode == LD_OP || opcode == MOV_OP);
++    m_wasp_rfq_load = (opcode == LD_OP);
++    m_wasp_rfq_move = (opcode == MOV_OP);
++    m_wasp_rfq_payload_words_per_lane = (m_vector_spec == V3_TYPE) ? 3 : 1;
++  }
++  if (saw_smemq_option) {
++    assert(opcode == LD_OP || opcode == MOV_OP);
++    m_smemq_load = (opcode == LD_OP);
++    m_smemq_move = (opcode == MOV_OP);
++    m_smemq_payload_words_per_lane = (m_vector_spec == V3_TYPE) ? 3 : 1;
++  }
+   if ((opcode == ST_OP || opcode == LD_OP || opcode == LDU_OP) &&
+       (space_spec == undefined_space)) {
+     m_space_spec = generic_space;
+diff --git a/src/cuda-sim/ptx_loader.cc b/src/cuda-sim/ptx_loader.cc
+index df35498..dbf42f7 100644
+--- a/src/cuda-sim/ptx_loader.cc
++++ b/src/cuda-sim/ptx_loader.cc
+@@ -29,6 +29,7 @@
+ #include "ptx_loader.h"
+ #include <dirent.h>
+ #include <unistd.h>
++#include <cstring>
+ #include <fstream>
+ #include <sstream>
+ #include "../../libcuda/gpgpu_context.h"
+@@ -345,6 +346,25 @@ char *get_app_binary_name() {
+ 
+ void gpgpu_context::gpgpu_ptx_info_load_from_filename(const char *filename,
+                                                       unsigned sm_version) {
++  const char *override_ptxinfo_name = getenv("PTX_SIM_PTXINFO_FILE");
++  if (override_ptxinfo_name != NULL && strlen(override_ptxinfo_name) > 0) {
++    printf("GPGPU-Sim PTX: overriding ptxinfo with '%s'\n",
++           override_ptxinfo_name);
++    ptxinfo->g_ptxinfo_filename = strdup(override_ptxinfo_name);
++    FILE *ptxinfo_in = fopen(ptxinfo->g_ptxinfo_filename, "r");
++    if (ptxinfo_in == NULL) {
++      printf("GPGPU-Sim PTX: ERROR ** could not open ptxinfo override '%s'\n",
++             override_ptxinfo_name);
++      exit(1);
++    }
++    ptxinfo_lex_init(&(ptxinfo->scanner));
++    ptxinfo_set_in(ptxinfo_in, ptxinfo->scanner);
++    ptxinfo_parse(ptxinfo->scanner, ptxinfo);
++    ptxinfo_lex_destroy(ptxinfo->scanner);
++    fclose(ptxinfo_in);
++    return;
++  }
++
+   std::string ptxas_filename(std::string(filename) + "as");
+   char buff[1024], extra_flags[1024];
+   extra_flags[0] = 0;
+@@ -377,6 +397,25 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
+                                                    unsigned source_num,
+                                                    unsigned sm_version,
+                                                    int no_of_ptx) {
++  const char *override_ptxinfo_name = getenv("PTX_SIM_PTXINFO_FILE");
++  if (override_ptxinfo_name != NULL && strlen(override_ptxinfo_name) > 0) {
++    printf("GPGPU-Sim PTX: overriding ptxinfo with '%s'\n",
++           override_ptxinfo_name);
++    ptxinfo->g_ptxinfo_filename = strdup(override_ptxinfo_name);
++    FILE *ptxinfo_in = fopen(ptxinfo->g_ptxinfo_filename, "r");
++    if (ptxinfo_in == NULL) {
++      printf("GPGPU-Sim PTX: ERROR ** could not open ptxinfo override '%s'\n",
++             override_ptxinfo_name);
++      exit(1);
++    }
++    ptxinfo_lex_init(&(ptxinfo->scanner));
++    ptxinfo_set_in(ptxinfo_in, ptxinfo->scanner);
++    ptxinfo_parse(ptxinfo->scanner, ptxinfo);
++    ptxinfo_lex_destroy(ptxinfo->scanner);
++    fclose(ptxinfo_in);
++    return;
++  }
++
+   // do ptxas for individual files instead of one big embedded ptx. This
+   // prevents the duplicate defs and declarations.
+   char ptx_file[1000];
+diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
+index 55d70d1..2ec965b 100644
+--- a/src/gpgpu-sim/gpu-sim.cc
++++ b/src/gpgpu-sim/gpu-sim.cc
+@@ -496,6 +496,62 @@ void shader_core_config::reg_options(class OptionParser *opp) {
+   option_parser_register(opp, "-gpgpu_sub_core_model", OPT_BOOL,
+                          &sub_core_model,
+                          "Sub Core Volta/Pascal model (default = off)", "0");
++  option_parser_register(opp, "-gpgpu_wasp_enable", OPT_BOOL,
++                         &gpgpu_wasp_enable,
++                         "enable WASP experimental simulator features", "0");
++  option_parser_register(opp, "-gpgpu_wasp_rfq_enable", OPT_BOOL,
++                         &gpgpu_wasp_rfq_enable,
++                         "enable WASP register-file queue timing model", "0");
++  option_parser_register(opp, "-gpgpu_wasp_rfq_entries", OPT_UINT32,
++                         &gpgpu_wasp_rfq_entries,
++                         "entries per WASP register-file queue", "32");
++  option_parser_register(opp, "-gpgpu_wasp_max_pipeline_stages", OPT_UINT32,
++                         &gpgpu_wasp_max_pipeline_stages,
++                         "maximum WASP pipeline stages supported by metadata",
++                         "16");
++  option_parser_register(
++      opp, "-gpgpu_wasp_rfq_count_register_pressure", OPT_BOOL,
++      &gpgpu_wasp_rfq_count_register_pressure,
++      "count WASP RFQ entries against shader register-file capacity", "1");
++  option_parser_register(opp, "-gpgpu_wasp_rfq_model_data", OPT_BOOL,
++                         &gpgpu_wasp_rfq_model_data,
++                         "store functional lane payloads in WASP RFQ entries",
++                         "1");
++  option_parser_register(opp, "-gpgpu_wasp_rfq_strict_fifo", OPT_BOOL,
++                         &gpgpu_wasp_rfq_strict_fifo,
++                         "require FIFO consumer order for WASP RFQ", "1");
++  option_parser_register(opp, "-gpgpu_wasp_rfq_assert_mask_match", OPT_BOOL,
++                         &gpgpu_wasp_rfq_assert_mask_match,
++                         "assert producer/consumer active-mask compatibility",
++                         "1");
++  option_parser_register(opp, "-gpgpu_wasp_metadata_file", OPT_CSTR,
++                         &gpgpu_wasp_metadata_file,
++                         "optional WASP sidecar metadata file", "");
++  option_parser_register(opp, "-gpgpu_smemq_enable", OPT_BOOL,
++                         &gpgpu_smemq_enable,
++                         "enable WASP shared-memory-backed queue model", "0");
++  option_parser_register(opp, "-gpgpu_smemq_entries", OPT_UINT32,
++                         &gpgpu_smemq_entries,
++                         "entries per shared-memory-backed queue", "32");
++  option_parser_register(opp, "-gpgpu_smemq_scheduler_ready", OPT_BOOL,
++                         &gpgpu_smemq_scheduler_ready,
++                         "make SMEMQ producer/consumer readiness visible to "
++                         "the scheduler",
++                         "1");
++  option_parser_register(opp, "-gpgpu_smemq_model_data", OPT_BOOL,
++                         &gpgpu_smemq_model_data,
++                         "store functional lane payloads in SMEMQ entries",
++                         "1");
++  option_parser_register(opp, "-gpgpu_smemq_assert_mask_match", OPT_BOOL,
++                         &gpgpu_smemq_assert_mask_match,
++                         "assert producer/consumer active-mask compatibility",
++                         "1");
++  option_parser_register(opp, "-gpgpu_smemq_bank_conflict_model", OPT_BOOL,
++                         &gpgpu_smemq_bank_conflict_model,
++                         "enable explicit SMEMQ bank-conflict modeling", "0");
++  option_parser_register(opp, "-gpgpu_smemq_metadata_file", OPT_CSTR,
++                         &gpgpu_smemq_metadata_file,
++                         "optional SMEMQ sidecar metadata file", "");
+   option_parser_register(opp, "-gpgpu_enable_specialized_operand_collector",
+                          OPT_BOOL, &enable_specialized_operand_collector,
+                          "enable_specialized_operand_collector", "1");
+@@ -1725,11 +1781,14 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
+   if (find_available_hwtid(padded_cta_size, false) == -1) return false;
+ 
+   const struct gpgpu_ptx_sim_info *kernel_info = ptx_sim_kernel_info(kernel);
++  const unsigned smemq_shared_bytes = m_config->smemq_shared_bytes_per_cta(k);
+ 
+-  if (m_occupied_shmem + kernel_info->smem > m_config->gpgpu_shmem_size)
++  if (m_occupied_shmem + kernel_info->smem + smemq_shared_bytes >
++      m_config->gpgpu_shmem_size)
+     return false;
+ 
+   unsigned int used_regs = padded_cta_size * ((kernel_info->regs + 3) & ~3);
++  used_regs += m_config->wasp_rfq_regs_per_cta(k);
+   if (m_occupied_regs + used_regs > m_config->gpgpu_shader_registers)
+     return false;
+ 
+@@ -1737,8 +1796,8 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
+ 
+   if (occupy) {
+     m_occupied_n_threads += padded_cta_size;
+-    m_occupied_shmem += kernel_info->smem;
+-    m_occupied_regs += (padded_cta_size * ((kernel_info->regs + 3) & ~3));
++    m_occupied_shmem += kernel_info->smem + smemq_shared_bytes;
++    m_occupied_regs += used_regs;
+     m_occupied_ctas++;
+ 
+     SHADER_DPRINTF(LIVENESS,
+@@ -1773,10 +1832,13 @@ void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
+ 
+     const struct gpgpu_ptx_sim_info *kernel_info = ptx_sim_kernel_info(kernel);
+ 
+-    assert(m_occupied_shmem >= (unsigned int)kernel_info->smem);
+-    m_occupied_shmem -= kernel_info->smem;
++    const unsigned smemq_shared_bytes = m_config->smemq_shared_bytes_per_cta(k);
++    assert(m_occupied_shmem >=
++           (unsigned int)kernel_info->smem + smemq_shared_bytes);
++    m_occupied_shmem -= kernel_info->smem + smemq_shared_bytes;
+ 
+     unsigned int used_regs = padded_cta_size * ((kernel_info->regs + 3) & ~3);
++    used_regs += m_config->wasp_rfq_regs_per_cta(k);
+     assert(m_occupied_regs >= used_regs);
+     m_occupied_regs -= used_regs;
+ 
+diff --git a/src/gpgpu-sim/shader.cc b/src/gpgpu-sim/shader.cc
+index 7482e0e..f608abb 100644
+--- a/src/gpgpu-sim/shader.cc
++++ b/src/gpgpu-sim/shader.cc
+@@ -31,6 +31,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #include "shader.h"
++#include <ctype.h>
+ #include <float.h>
+ #include <limits.h>
+ #include <string.h>
+@@ -516,6 +517,8 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
+     m_occupied_ctas = 0;
+     m_occupied_hwtid.reset();
+     m_occupied_cta_to_hwtid.clear();
++    m_wasp_rfq_table.clear();
++    m_smemq_table.clear();
+     m_active_warps = 0;
+   }
+   for (unsigned i = start_thread; i < end_thread; i++) {
+@@ -529,6 +532,351 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
+   }
+ }
+ 
++bool shader_core_ctx::wasp_rfq_enabled() const {
++  return m_config->gpgpu_wasp_enable && m_config->gpgpu_wasp_rfq_enable;
++}
++
++wasp_rfq_key shader_core_ctx::wasp_rfq_key_for_warp(
++    unsigned warp_id, unsigned queue_id) const {
++  assert(warp_id < m_warp.size());
++  unsigned warps_per_cta = kernel_padded_threads_per_cta / m_config->warp_size;
++  if (warps_per_cta == 0) warps_per_cta = 8;
++  unsigned local_warp = warp_id % warps_per_cta;
++  unsigned producer_warps = m_config->wasp_metadata_producer_warps_per_cta
++                                ? m_config->wasp_metadata_producer_warps_per_cta
++                                : warps_per_cta / 2;
++  if (producer_warps == 0) producer_warps = 1;
++  assert(producer_warps < warps_per_cta);
++  unsigned original_warp_id =
++      local_warp < producer_warps ? local_warp : local_warp - producer_warps;
++
++  wasp_rfq_key key;
++  key.cta_hw_id = m_warp[warp_id]->get_cta_id();
++  key.original_warp_id = original_warp_id;
++  key.src_stage_id = 0;
++  key.dst_stage_id = 1;
++  key.queue_id = queue_id;
++  return key;
++}
++
++wasp_rfq_token shader_core_ctx::wasp_rfq_token_from_inst(
++    const warp_inst_t &inst) const {
++  wasp_rfq_token token;
++  token.key.cta_hw_id = inst.m_wasp_rfq_token_cta_hw_id;
++  token.key.original_warp_id = inst.m_wasp_rfq_token_original_warp_id;
++  token.key.src_stage_id = 0;
++  token.key.dst_stage_id = 1;
++  token.key.queue_id = inst.m_wasp_rfq_queue_id;
++  token.slot_index = inst.m_wasp_rfq_token_slot_index;
++  token.sequence = inst.m_wasp_rfq_token_sequence;
++  token.payload_words_per_lane = inst.m_wasp_rfq_payload_words_per_lane;
++  token.valid = inst.m_wasp_rfq_token_valid;
++  return token;
++}
++
++void shader_core_ctx::wasp_rfq_write_token_to_inst(
++    warp_inst_t *inst, const wasp_rfq_token &token) {
++  inst->m_wasp_rfq_token_valid = token.valid;
++  inst->m_wasp_rfq_token_cta_hw_id = token.key.cta_hw_id;
++  inst->m_wasp_rfq_token_original_warp_id = token.key.original_warp_id;
++  inst->m_wasp_rfq_token_slot_index = token.slot_index;
++  inst->m_wasp_rfq_token_sequence = token.sequence;
++}
++
++bool shader_core_ctx::wasp_rfq_can_issue(unsigned warp_id,
++                                         const warp_inst_t *inst,
++                                         bool count_stall) {
++  if (!inst || !(inst->m_wasp_rfq_load || inst->m_wasp_rfq_move)) return true;
++  if (!wasp_rfq_enabled()) {
++    printf("GPGPU-Sim WASP RFQ: RFQ PTX requires RFQ config to be enabled\n");
++    abort();
++  }
++
++  wasp_rfq_key key = wasp_rfq_key_for_warp(warp_id, inst->m_wasp_rfq_queue_id);
++  unsigned payload_words =
++      inst->m_wasp_rfq_payload_words_per_lane
++          ? inst->m_wasp_rfq_payload_words_per_lane
++          : 1;
++  wasp_rfq &queue = m_wasp_rfq_table.get_or_create(
++      key, m_config->gpgpu_wasp_rfq_entries, payload_words,
++      m_config->warp_size);
++
++  if (inst->m_wasp_rfq_load) {
++    if (queue.full()) {
++      if (count_stall) m_stats->wasp_rfq_full_stalls++;
++      return false;
++    }
++    return true;
++  }
++
++  if (queue.empty()) {
++    if (count_stall) m_stats->wasp_rfq_empty_stalls++;
++    return false;
++  }
++  if (!queue.head_ready()) {
++    if (count_stall) m_stats->wasp_rfq_head_not_ready_stalls++;
++    return false;
++  }
++  return true;
++}
++
++void shader_core_ctx::wasp_rfq_prepare_issue(warp_inst_t *inst) {
++  if (!wasp_rfq_enabled() || !inst ||
++      !(inst->m_wasp_rfq_load || inst->m_wasp_rfq_move))
++    return;
++
++  wasp_rfq_key key =
++      wasp_rfq_key_for_warp(inst->warp_id(), inst->m_wasp_rfq_queue_id);
++  unsigned payload_words =
++      inst->m_wasp_rfq_payload_words_per_lane
++          ? inst->m_wasp_rfq_payload_words_per_lane
++          : 1;
++  wasp_rfq &queue = m_wasp_rfq_table.get_or_create(
++      key, m_config->gpgpu_wasp_rfq_entries, payload_words,
++      m_config->warp_size);
++
++  if (inst->m_wasp_rfq_load) {
++    assert(!queue.full());
++    wasp_rfq_token token =
++        queue.reserve_tail(key, inst->get_active_mask(), 0);
++    wasp_rfq_write_token_to_inst(inst, token);
++    m_stats->wasp_rfq_reservations++;
++    if (queue.occupancy() > m_stats->wasp_rfq_max_occupancy)
++      m_stats->wasp_rfq_max_occupancy = queue.occupancy();
++    m_stats->wasp_stage_issue_count[0]++;
++  } else {
++    wasp_rfq_token token;
++    token.key = key;
++    token.payload_words_per_lane = payload_words;
++    token.valid = true;
++    wasp_rfq_write_token_to_inst(inst, token);
++    m_stats->wasp_stage_issue_count[1]++;
++  }
++}
++
++void shader_core_ctx::wasp_rfq_after_func_exec(warp_inst_t *inst) {
++  if (!wasp_rfq_enabled() || !inst ||
++      !(inst->m_wasp_rfq_load || inst->m_wasp_rfq_move))
++    return;
++
++  wasp_rfq_token token = wasp_rfq_token_from_inst(*inst);
++  wasp_rfq *queue = m_wasp_rfq_table.find(token.key);
++  assert(queue);
++
++  if (inst->m_wasp_rfq_load) {
++    queue->set_pending_responses(token, inst->accessq_count());
++  } else {
++    assert(queue->head_ready());
++    queue->consume_head(token.key);
++    m_stats->wasp_rfq_consumes++;
++  }
++}
++
++bool shader_core_ctx::wasp_rfq_load_pending(const warp_inst_t &inst) const {
++  if (!wasp_rfq_enabled() || !inst.m_wasp_rfq_load) return false;
++  wasp_rfq_token token = wasp_rfq_token_from_inst(inst);
++  const wasp_rfq *queue = m_wasp_rfq_table.find(token.key);
++  assert(queue);
++  return queue->has_pending_responses(token);
++}
++
++bool shader_core_ctx::wasp_rfq_mark_mem_response(const warp_inst_t &inst) {
++  if (!wasp_rfq_enabled() || !inst.m_wasp_rfq_load) return true;
++  wasp_rfq_token token = wasp_rfq_token_from_inst(inst);
++  wasp_rfq *queue = m_wasp_rfq_table.find(token.key);
++  assert(queue);
++  m_stats->wasp_rfq_memory_fills++;
++  return queue->mark_response(token);
++}
++
++void shader_core_ctx::wasp_rfq_functional_store_lane(
++    const warp_inst_t &inst, unsigned lane_id, unsigned word, uint64_t value) {
++  if (!wasp_rfq_enabled() || !m_config->gpgpu_wasp_rfq_model_data) return;
++  wasp_rfq_token token = wasp_rfq_token_from_inst(inst);
++  wasp_rfq *queue = m_wasp_rfq_table.find(token.key);
++  assert(queue);
++  queue->set_lane_value(token, lane_id, word, value);
++}
++
++uint64_t shader_core_ctx::wasp_rfq_functional_read_lane(
++    const warp_inst_t &inst, unsigned lane_id, unsigned word) const {
++  if (!wasp_rfq_enabled() || !m_config->gpgpu_wasp_rfq_model_data) return 0;
++  wasp_rfq_token token = wasp_rfq_token_from_inst(inst);
++  const wasp_rfq *queue = m_wasp_rfq_table.find(token.key);
++  assert(queue);
++  return queue->head_lane_value(lane_id, word);
++}
++
++bool shader_core_ctx::smemq_enabled() const {
++  return m_config->gpgpu_smemq_enable;
++}
++
++smemq_key shader_core_ctx::smemq_key_for_warp(unsigned warp_id,
++                                              unsigned queue_id) const {
++  assert(warp_id < m_warp.size());
++  unsigned warps_per_cta = kernel_padded_threads_per_cta / m_config->warp_size;
++  if (warps_per_cta == 0) warps_per_cta = 8;
++  unsigned local_warp = warp_id % warps_per_cta;
++  unsigned producer_warps =
++      m_config->smemq_metadata_producer_warps_per_cta
++          ? m_config->smemq_metadata_producer_warps_per_cta
++          : warps_per_cta / 2;
++  if (producer_warps == 0) producer_warps = 1;
++  assert(producer_warps < warps_per_cta);
++  unsigned original_warp_id =
++      local_warp < producer_warps ? local_warp : local_warp - producer_warps;
++
++  smemq_key key;
++  key.cta_hw_id = m_warp[warp_id]->get_cta_id();
++  key.original_warp_id = original_warp_id;
++  key.src_stage_id = 0;
++  key.dst_stage_id = 1;
++  key.queue_id = queue_id;
++  return key;
++}
++
++smemq_token shader_core_ctx::smemq_token_from_inst(
++    const warp_inst_t &inst) const {
++  smemq_token token;
++  token.key.cta_hw_id = inst.m_smemq_token_cta_hw_id;
++  token.key.original_warp_id = inst.m_smemq_token_original_warp_id;
++  token.key.src_stage_id = 0;
++  token.key.dst_stage_id = 1;
++  token.key.queue_id = inst.m_smemq_queue_id;
++  token.slot_index = inst.m_smemq_token_slot_index;
++  token.sequence = inst.m_smemq_token_sequence;
++  token.payload_words_per_lane = inst.m_smemq_payload_words_per_lane;
++  token.valid = inst.m_smemq_token_valid;
++  return token;
++}
++
++void shader_core_ctx::smemq_write_token_to_inst(warp_inst_t *inst,
++                                                const smemq_token &token) {
++  inst->m_smemq_token_valid = token.valid;
++  inst->m_smemq_token_cta_hw_id = token.key.cta_hw_id;
++  inst->m_smemq_token_original_warp_id = token.key.original_warp_id;
++  inst->m_smemq_token_slot_index = token.slot_index;
++  inst->m_smemq_token_sequence = token.sequence;
++}
++
++bool shader_core_ctx::smemq_can_issue(unsigned warp_id,
++                                      const warp_inst_t *inst,
++                                      bool count_stall) {
++  if (!inst || !(inst->m_smemq_load || inst->m_smemq_move)) return true;
++  if (!smemq_enabled()) {
++    printf("GPGPU-Sim SMEMQ: SMEMQ PTX requires SMEMQ config to be enabled\n");
++    abort();
++  }
++
++  smemq_key key = smemq_key_for_warp(warp_id, inst->m_smemq_queue_id);
++  unsigned payload_words =
++      inst->m_smemq_payload_words_per_lane
++          ? inst->m_smemq_payload_words_per_lane
++          : 1;
++  smemq &queue = m_smemq_table.get_or_create(
++      key, m_config->gpgpu_smemq_entries, payload_words, m_config->warp_size);
++
++  if (inst->m_smemq_load) {
++    if (queue.full()) {
++      if (count_stall) m_stats->smemq_full_stalls++;
++      return false;
++    }
++    return true;
++  }
++
++  if (queue.empty()) {
++    if (count_stall) m_stats->smemq_empty_stalls++;
++    return false;
++  }
++  if (!queue.head_ready()) {
++    if (count_stall) m_stats->smemq_head_not_ready_stalls++;
++    return false;
++  }
++  return true;
++}
++
++void shader_core_ctx::smemq_prepare_issue(warp_inst_t *inst) {
++  if (!smemq_enabled() || !inst || !(inst->m_smemq_load || inst->m_smemq_move))
++    return;
++
++  smemq_key key = smemq_key_for_warp(inst->warp_id(), inst->m_smemq_queue_id);
++  unsigned payload_words =
++      inst->m_smemq_payload_words_per_lane
++          ? inst->m_smemq_payload_words_per_lane
++          : 1;
++  smemq &queue = m_smemq_table.get_or_create(
++      key, m_config->gpgpu_smemq_entries, payload_words, m_config->warp_size);
++
++  if (inst->m_smemq_load) {
++    assert(!queue.full());
++    smemq_token token = queue.reserve_tail(key, inst->get_active_mask(), 0);
++    smemq_write_token_to_inst(inst, token);
++    m_stats->smemq_reservations++;
++    if (queue.occupancy() > m_stats->smemq_max_occupancy)
++      m_stats->smemq_max_occupancy = queue.occupancy();
++  } else {
++    smemq_token token;
++    token.key = key;
++    token.payload_words_per_lane = payload_words;
++    token.valid = true;
++    smemq_write_token_to_inst(inst, token);
++  }
++}
++
++void shader_core_ctx::smemq_after_func_exec(warp_inst_t *inst) {
++  if (!smemq_enabled() || !inst || !(inst->m_smemq_load || inst->m_smemq_move))
++    return;
++
++  smemq_token token = smemq_token_from_inst(*inst);
++  smemq *queue = m_smemq_table.find(token.key);
++  assert(queue);
++
++  if (inst->m_smemq_load) {
++    queue->set_pending_responses(token, inst->accessq_count());
++  } else {
++    assert(queue->head_ready());
++    queue->consume_head(token.key);
++    m_stats->smemq_consumes++;
++  }
++}
++
++bool shader_core_ctx::smemq_load_pending(const warp_inst_t &inst) const {
++  if (!smemq_enabled() || !inst.m_smemq_load) return false;
++  smemq_token token = smemq_token_from_inst(inst);
++  const smemq *queue = m_smemq_table.find(token.key);
++  assert(queue);
++  return queue->has_pending_responses(token);
++}
++
++bool shader_core_ctx::smemq_mark_mem_response(const warp_inst_t &inst) {
++  if (!smemq_enabled() || !inst.m_smemq_load) return true;
++  smemq_token token = smemq_token_from_inst(inst);
++  smemq *queue = m_smemq_table.find(token.key);
++  assert(queue);
++  m_stats->smemq_memory_fills++;
++  return queue->mark_response(token);
++}
++
++void shader_core_ctx::smemq_functional_store_lane(const warp_inst_t &inst,
++                                                  unsigned lane_id,
++                                                  unsigned word,
++                                                  uint64_t value) {
++  if (!smemq_enabled() || !m_config->gpgpu_smemq_model_data) return;
++  smemq_token token = smemq_token_from_inst(inst);
++  smemq *queue = m_smemq_table.find(token.key);
++  assert(queue);
++  queue->set_lane_value(token, lane_id, word, value);
++}
++
++uint64_t shader_core_ctx::smemq_functional_read_lane(
++    const warp_inst_t &inst, unsigned lane_id, unsigned word) const {
++  if (!smemq_enabled() || !m_config->gpgpu_smemq_model_data) return 0;
++  smemq_token token = smemq_token_from_inst(inst);
++  const smemq *queue = m_smemq_table.find(token.key);
++  assert(queue);
++  return queue->head_lane_value(lane_id, word);
++}
++
+ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
+                                  unsigned end_thread, unsigned ctaid,
+                                  int cta_size, kernel_info_t &kernel) {
+@@ -738,6 +1086,69 @@ void shader_core_stats::print(FILE *fout) const {
+   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++)
+     fprintf(fout, "WS%d:%d\t", i, dual_issue_nums[i]);
+   fprintf(fout, "\n");
++  unsigned long long total_eligible_warps = 0;
++  unsigned long long total_eligible_slots = 0;
++  unsigned long long total_eligible_samples = 0;
++  fprintf(fout, "eligible_warps_per_scheduler: ");
++  for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++) {
++    const double avg_eligible =
++        eligible_warp_sample_count[i]
++            ? (double)eligible_warp_count[i] /
++                  (double)eligible_warp_sample_count[i]
++            : 0.0;
++    fprintf(fout, "WS%d:%.4f\t", i, avg_eligible);
++    total_eligible_warps += eligible_warp_count[i];
++    total_eligible_slots += eligible_warp_slot_count[i];
++    total_eligible_samples += eligible_warp_sample_count[i];
++  }
++  fprintf(fout, "\n");
++  fprintf(fout, "eligible_warp_count = %llu\n", total_eligible_warps);
++  fprintf(fout, "eligible_warp_slot_count = %llu\n", total_eligible_slots);
++  fprintf(fout, "eligible_warp_sample_count = %llu\n",
++          total_eligible_samples);
++  fprintf(fout, "avg_eligible_warps_per_scheduler = %.4f\n",
++          total_eligible_samples
++              ? (double)total_eligible_warps /
++                    (double)total_eligible_samples
++              : 0.0);
++  fprintf(fout, "eligible_warp_occupancy = %.4f%%\n",
++          total_eligible_slots
++              ? 100.0 * (double)total_eligible_warps /
++                    (double)total_eligible_slots
++              : 0.0);
++  fprintf(fout, "wasp_rfq_reservations = %llu\n", wasp_rfq_reservations);
++  fprintf(fout, "wasp_rfq_memory_fills = %llu\n", wasp_rfq_memory_fills);
++  fprintf(fout, "wasp_rfq_consumes = %llu\n", wasp_rfq_consumes);
++  fprintf(fout, "wasp_rfq_full_stalls = %llu\n", wasp_rfq_full_stalls);
++  fprintf(fout, "wasp_rfq_empty_stalls = %llu\n", wasp_rfq_empty_stalls);
++  fprintf(fout, "wasp_rfq_head_not_ready_stalls = %llu\n",
++          wasp_rfq_head_not_ready_stalls);
++  fprintf(fout, "wasp_rfq_register_slots_per_cta = %llu\n",
++          wasp_rfq_register_slots_per_cta);
++  fprintf(fout, "wasp_rfq_metadata_bits_per_cta = %llu\n",
++          wasp_rfq_metadata_bits_per_cta);
++  fprintf(fout, "wasp_rfq_adjusted_max_cta = %u\n",
++          wasp_rfq_adjusted_max_cta);
++  fprintf(fout, "wasp_rfq_max_occupancy = %llu\n",
++          wasp_rfq_max_occupancy);
++  fprintf(fout, "wasp_stage_issue_count: ");
++  for (unsigned i = 0; i < m_config->gpgpu_wasp_max_pipeline_stages && i < 16;
++       i++)
++    fprintf(fout, "stage%u:%llu\t", i, wasp_stage_issue_count[i]);
++  fprintf(fout, "\n");
++  fprintf(fout, "smemq_reservations = %llu\n", smemq_reservations);
++  fprintf(fout, "smemq_memory_fills = %llu\n", smemq_memory_fills);
++  fprintf(fout, "smemq_consumes = %llu\n", smemq_consumes);
++  fprintf(fout, "smemq_full_stalls = %llu\n", smemq_full_stalls);
++  fprintf(fout, "smemq_empty_stalls = %llu\n", smemq_empty_stalls);
++  fprintf(fout, "smemq_head_not_ready_stalls = %llu\n",
++          smemq_head_not_ready_stalls);
++  fprintf(fout, "smemq_shared_bytes_per_cta = %llu\n",
++          smemq_shared_bytes_per_cta);
++  fprintf(fout, "smemq_metadata_bits_per_cta = %llu\n",
++          smemq_metadata_bits_per_cta);
++  fprintf(fout, "smemq_adjusted_max_cta = %u\n", smemq_adjusted_max_cta);
++  fprintf(fout, "smemq_max_occupancy = %llu\n", smemq_max_occupancy);
+ 
+   m_outgoing_traffic_stats->print(fout);
+   m_incoming_traffic_stats->print(fout);
+@@ -1049,7 +1460,11 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
+       m_warp[warp_id]->get_dynamic_warp_id(), sch_id,
+       m_warp[warp_id]->get_streamID());  // dynamic instruction information
+   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
++  wasp_rfq_prepare_issue(*pipe_reg);
++  smemq_prepare_issue(*pipe_reg);
+   func_exec_inst(**pipe_reg);
++  wasp_rfq_after_func_exec(*pipe_reg);
++  smemq_after_func_exec(*pipe_reg);
+ 
+   // Add LDGSTS instructions into a buffer
+   unsigned int ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
+@@ -1266,6 +1681,28 @@ void scheduler_unit::cycle() {
+   bool issued_inst = false;  // of these we issued one
+ 
+   order_warps();
++  unsigned eligible_warps = 0;
++  for (std::vector<shd_warp_t *>::const_iterator iter =
++           m_next_cycle_prioritized_warps.begin();
++       iter != m_next_cycle_prioritized_warps.end(); iter++) {
++    if ((*iter) == NULL || (*iter)->done_exit()) continue;
++    unsigned warp_id = (*iter)->get_warp_id();
++    if (warp(warp_id).waiting() || warp(warp_id).ibuffer_empty()) continue;
++
++    const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
++    if (!pI || !warp(warp_id).ibuffer_next_valid()) continue;
++
++    unsigned pc, rpc;
++    m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
++    if (pc == pI->pc && !m_scoreboard->checkCollision(warp_id, pI) &&
++        m_shader->wasp_rfq_can_issue(warp_id, pI, false) &&
++        m_shader->smemq_can_issue(warp_id, pI, false))
++      eligible_warps++;
++  }
++  m_stats->eligible_warp_count[m_id] += eligible_warps;
++  m_stats->eligible_warp_slot_count[m_id] += m_supervised_warps.size();
++  m_stats->eligible_warp_sample_count[m_id]++;
++
+   for (std::vector<shd_warp_t *>::const_iterator iter =
+            m_next_cycle_prioritized_warps.begin();
+        iter != m_next_cycle_prioritized_warps.end(); iter++) {
+@@ -1330,7 +1767,9 @@ void scheduler_unit::cycle() {
+           warp(warp_id).ibuffer_flush();
+         } else {
+           valid_inst = true;
+-          if (!m_scoreboard->checkCollision(warp_id, pI)) {
++          if (!m_scoreboard->checkCollision(warp_id, pI) &&
++              m_shader->wasp_rfq_can_issue(warp_id, pI, true) &&
++              m_shader->smemq_can_issue(warp_id, pI, true)) {
+             SCHED_DPRINTF(
+                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
+                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+@@ -2013,6 +2452,8 @@ mem_stage_stall_type ldst_unit::process_cache_access(
+     assert(!read_sent);
+     inst.accessq_pop_back();
+     if (inst.is_load()) {
++      if (inst.m_wasp_rfq_load) m_core->wasp_rfq_mark_mem_response(inst);
++      if (inst.m_smemq_load) m_core->smemq_mark_mem_response(inst);
+       for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
+         if (inst.out[r] > 0) m_pending_writes[inst.warp_id()][inst.out[r]]--;
+ 
+@@ -2136,6 +2577,14 @@ void ldst_unit::L1_latency_queue_cycle() {
+         assert(!read_sent);
+         l1_latency_queue[j][0] = NULL;
+         if (mf_next->get_inst().is_load()) {
++          if (mf_next->get_inst().m_wasp_rfq_load) {
++            if (m_core->wasp_rfq_mark_mem_response(mf_next->get_inst()))
++              m_core->warp_inst_complete(mf_next->get_inst());
++          }
++          if (mf_next->get_inst().m_smemq_load) {
++            if (m_core->smemq_mark_mem_response(mf_next->get_inst()))
++              m_core->warp_inst_complete(mf_next->get_inst());
++          }
+           for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
+             if (mf_next->get_inst().out[r] > 0) {
+               assert(m_pending_writes[mf_next->get_inst().warp_id()]
+@@ -2692,6 +3141,24 @@ void ldst_unit::issue(register_set &reg_set) {
+ void ldst_unit::writeback() {
+   // process next instruction that is going to writeback
+   if (!m_next_wb.empty()) {
++    if (m_next_wb.m_wasp_rfq_load) {
++      if (m_core->wasp_rfq_mark_mem_response(m_next_wb)) {
++        m_core->warp_inst_complete(m_next_wb);
++      }
++      m_next_wb.clear();
++      m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
++      m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
++      return;
++    }
++    if (m_next_wb.m_smemq_load) {
++      if (m_core->smemq_mark_mem_response(m_next_wb)) {
++        m_core->warp_inst_complete(m_next_wb);
++      }
++      m_next_wb.clear();
++      m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
++      m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
++      return;
++    }
+     if (m_operand_collector->writeback(m_next_wb)) {
+       bool insn_completed = false;
+       for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+@@ -2935,17 +3402,23 @@ void ldst_unit::cycle() {
+         //}
+ 
+         bool pending_requests = false;
+-        for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+-          unsigned reg_id = pipe_reg.out[r];
+-          if (reg_id > 0) {
+-            if (m_pending_writes[warp_id].find(reg_id) !=
+-                m_pending_writes[warp_id].end()) {
+-              if (m_pending_writes[warp_id][reg_id] > 0) {
+-                pending_requests = true;
+-                break;
+-              } else {
+-                // this instruction is done already
+-                m_pending_writes[warp_id].erase(reg_id);
++        if (pipe_reg.m_wasp_rfq_load) {
++          pending_requests = m_core->wasp_rfq_load_pending(pipe_reg);
++        } else if (pipe_reg.m_smemq_load) {
++          pending_requests = m_core->smemq_load_pending(pipe_reg);
++        } else {
++          for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
++            unsigned reg_id = pipe_reg.out[r];
++            if (reg_id > 0) {
++              if (m_pending_writes[warp_id].find(reg_id) !=
++                  m_pending_writes[warp_id].end()) {
++                if (m_pending_writes[warp_id][reg_id] > 0) {
++                  pending_requests = true;
++                  break;
++                } else {
++                  // this instruction is done already
++                  m_pending_writes[warp_id].erase(reg_id);
++                }
+               }
+             }
+           }
+@@ -3008,6 +3481,8 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
+     }
+ 
+     // Jin: for concurrent kernels on sm
++    m_wasp_rfq_table.erase_cta(cta_num);
++    m_smemq_table.erase_cta(cta_num);
+     release_shader_resource_1block(cta_num, *kernel);
+     kernel->dec_running();
+     if (!m_gpu->kernel_more_cta_left(kernel)) {
+@@ -3508,7 +3983,99 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
+   }
+ }
+ 
++unsigned shader_core_config::wasp_rfq_regs_per_cta(
++    const kernel_info_t &k) const {
++  if (!(gpgpu_wasp_enable && gpgpu_wasp_rfq_enable &&
++        gpgpu_wasp_rfq_count_register_pressure))
++    return 0;
++  return wasp_rfq_producer_warps_per_cta(k) *
++         wasp_rfq_queues_per_original_warp() * gpgpu_wasp_rfq_entries *
++         wasp_rfq_payload_words_per_lane() * warp_size;
++}
++
++unsigned shader_core_config::wasp_rfq_producer_warps_per_cta(
++    const kernel_info_t &k) const {
++  unsigned threads_per_cta = k.threads_per_cta();
++  unsigned int padded_cta_size = threads_per_cta;
++  if (padded_cta_size % warp_size)
++    padded_cta_size = ((padded_cta_size / warp_size) + 1) * warp_size;
++  unsigned warps_per_cta = padded_cta_size / warp_size;
++  if (wasp_metadata_producer_warps_per_cta > 0) {
++    assert(wasp_metadata_producer_warps_per_cta < warps_per_cta);
++    return wasp_metadata_producer_warps_per_cta;
++  }
++  unsigned producer_warps_per_cta = warps_per_cta / 2;
++  return producer_warps_per_cta ? producer_warps_per_cta : 1;
++}
++
++unsigned shader_core_config::wasp_rfq_payload_words_per_lane() const {
++  return wasp_metadata_payload_words_per_lane
++             ? wasp_metadata_payload_words_per_lane
++             : 1;
++}
++
++unsigned shader_core_config::wasp_rfq_queues_per_original_warp() const {
++  return wasp_metadata_queues_per_original_warp
++             ? wasp_metadata_queues_per_original_warp
++             : 1;
++}
++
++unsigned shader_core_config::wasp_rfq_metadata_bits_per_cta(
++    const kernel_info_t &k) const {
++  if (!(gpgpu_wasp_enable && gpgpu_wasp_rfq_enable)) return 0;
++  const unsigned metadata_bits_per_queue = 128;
++  return wasp_rfq_producer_warps_per_cta(k) *
++         wasp_rfq_queues_per_original_warp() * metadata_bits_per_queue;
++}
++
++unsigned shader_core_config::smemq_producer_warps_per_cta(
++    const kernel_info_t &k) const {
++  unsigned threads_per_cta = k.threads_per_cta();
++  unsigned int padded_cta_size = threads_per_cta;
++  if (padded_cta_size % warp_size)
++    padded_cta_size = ((padded_cta_size / warp_size) + 1) * warp_size;
++  unsigned warps_per_cta = padded_cta_size / warp_size;
++  if (smemq_metadata_producer_warps_per_cta > 0) {
++    assert(smemq_metadata_producer_warps_per_cta < warps_per_cta);
++    return smemq_metadata_producer_warps_per_cta;
++  }
++  unsigned producer_warps_per_cta = warps_per_cta / 2;
++  return producer_warps_per_cta ? producer_warps_per_cta : 1;
++}
++
++unsigned shader_core_config::smemq_payload_words_per_lane() const {
++  return smemq_metadata_payload_words_per_lane
++             ? smemq_metadata_payload_words_per_lane
++             : 1;
++}
++
++unsigned shader_core_config::smemq_queues_per_original_warp() const {
++  return smemq_metadata_queues_per_original_warp
++             ? smemq_metadata_queues_per_original_warp
++             : 1;
++}
++
++unsigned shader_core_config::smemq_shared_bytes_per_cta(
++    const kernel_info_t &k) const {
++  if (!gpgpu_smemq_enable) return 0;
++  return smemq_producer_warps_per_cta(k) *
++         smemq_queues_per_original_warp() * gpgpu_smemq_entries *
++         smemq_payload_words_per_lane() * warp_size * sizeof(float);
++}
++
++unsigned shader_core_config::smemq_metadata_bits_per_cta(
++    const kernel_info_t &k) const {
++  if (!gpgpu_smemq_enable) return 0;
++  const unsigned metadata_bits_per_queue = 128;
++  return smemq_producer_warps_per_cta(k) *
++         smemq_queues_per_original_warp() * metadata_bits_per_queue;
++}
++
+ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
++  if (gpgpu_wasp_enable && gpgpu_wasp_rfq_enable && gpgpu_smemq_enable) {
++    printf("GPGPU-Sim SMEMQ: RFQ and SMEMQ cannot be enabled together\n");
++    abort();
++  }
+   unsigned threads_per_cta = k.threads_per_cta();
+   const class function_info *kernel = k.entry();
+   unsigned int padded_cta_size = threads_per_cta;
+@@ -3521,15 +4088,28 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
+   const struct gpgpu_ptx_sim_info *kernel_info = ptx_sim_kernel_info(kernel);
+ 
+   // Limit by shmem/shader
+-  unsigned int result_shmem = (unsigned)-1;
++  unsigned smemq_shared_bytes = smemq_shared_bytes_per_cta(k);
++  unsigned total_smem_per_cta = kernel_info->smem + smemq_shared_bytes;
++  unsigned int result_shmem_before_smemq = (unsigned)-1;
+   if (kernel_info->smem > 0)
+-    result_shmem = gpgpu_shmem_size / kernel_info->smem;
++    result_shmem_before_smemq = gpgpu_shmem_size / kernel_info->smem;
++  unsigned int result_shmem = (unsigned)-1;
++  if (total_smem_per_cta > 0)
++    result_shmem = gpgpu_shmem_size / total_smem_per_cta;
+ 
+   // Limit by register count, rounded up to multiple of 4.
+   unsigned int result_regs = (unsigned)-1;
++  unsigned normal_regs_per_cta = 0;
+   if (kernel_info->regs > 0)
+-    result_regs = gpgpu_shader_registers /
+-                  (padded_cta_size * ((kernel_info->regs + 3) & ~3));
++    normal_regs_per_cta = padded_cta_size * ((kernel_info->regs + 3) & ~3);
++  unsigned rfq_regs_per_cta = wasp_rfq_regs_per_cta(k);
++  unsigned regs_per_cta = normal_regs_per_cta + rfq_regs_per_cta;
++  unsigned int result_regs_before_rfq = (unsigned)-1;
++  if (normal_regs_per_cta > 0)
++    result_regs_before_rfq = gpgpu_shader_registers / normal_regs_per_cta;
++  if (regs_per_cta > 0) {
++    result_regs = gpgpu_shader_registers / regs_per_cta;
++  }
+ 
+   // Limit by CTA
+   unsigned int result_cta = max_cta_per_core;
+@@ -3539,6 +4119,17 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
+   result = gs_min2(result, result_regs);
+   result = gs_min2(result, result_cta);
+ 
++  unsigned result_before_rfq = result_thread;
++  result_before_rfq = gs_min2(result_before_rfq, result_shmem);
++  result_before_rfq = gs_min2(result_before_rfq, result_regs_before_rfq);
++  result_before_rfq = gs_min2(result_before_rfq, result_cta);
++
++  unsigned result_before_smemq = result_thread;
++  result_before_smemq = gs_min2(result_before_smemq,
++                                result_shmem_before_smemq);
++  result_before_smemq = gs_min2(result_before_smemq, result_regs);
++  result_before_smemq = gs_min2(result_before_smemq, result_cta);
++
+   static const struct gpgpu_ptx_sim_info *last_kinfo = NULL;
+   if (last_kinfo !=
+       kernel_info) {  // Only print out stats if kernel_info struct changes
+@@ -3549,6 +4140,60 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
+     if (result == result_regs) printf(" regs");
+     if (result == result_cta) printf(" cta_limit");
+     printf("\n");
++    if (gpgpu_wasp_enable && gpgpu_wasp_rfq_enable) {
++      printf(
++          "GPGPU-Sim WASP RFQ: normal_regs_per_cta = %u, "
++          "rfq_regs_per_cta = %u, total_regs_per_cta_after_rfq = %u\n",
++          normal_regs_per_cta, rfq_regs_per_cta, regs_per_cta);
++      printf(
++          "GPGPU-Sim WASP RFQ: ctas_per_sm_limit_by_regs_before_rfq = %u, "
++          "ctas_per_sm_limit_by_regs_after_rfq = %u\n",
++          result_regs_before_rfq, result_regs);
++      printf(
++          "GPGPU-Sim WASP RFQ: resident_ctas_per_sm_before_rfq = %u, "
++          "resident_ctas_per_sm_after_rfq = %u, depth = %u\n",
++          result_before_rfq, result, gpgpu_wasp_rfq_entries);
++      printf(
++          "GPGPU-Sim WASP RFQ: active_warp_occupancy_before_rfq = %.4f%%, "
++          "active_warp_occupancy_after_rfq = %.4f%%\n",
++          100.0 * (double)(result_before_rfq * padded_cta_size) /
++              (double)n_thread_per_shader,
++          100.0 * (double)(result * padded_cta_size) /
++              (double)n_thread_per_shader);
++      printf(
++          "GPGPU-Sim WASP RFQ: metadata_bits_per_cta = %u, "
++          "payload_words_per_lane = %u, queues_per_original_warp = %u\n",
++          wasp_rfq_metadata_bits_per_cta(k),
++          wasp_rfq_payload_words_per_lane(),
++          wasp_rfq_queues_per_original_warp());
++    }
++    if (gpgpu_smemq_enable) {
++      printf(
++          "GPGPU-Sim SMEMQ: kernel_smem_per_cta = %u, "
++          "smemq_shared_bytes_per_cta = %u, total_smem_per_cta_after_smemq = "
++          "%u\n",
++          kernel_info->smem, smemq_shared_bytes, total_smem_per_cta);
++      printf(
++          "GPGPU-Sim SMEMQ: ctas_per_sm_limit_by_smem_before_smemq = %u, "
++          "ctas_per_sm_limit_by_smem_after_smemq = %u\n",
++          result_shmem_before_smemq, result_shmem);
++      printf(
++          "GPGPU-Sim SMEMQ: resident_ctas_per_sm_before_smemq = %u, "
++          "resident_ctas_per_sm_after_smemq = %u, depth = %u\n",
++          result_before_smemq, result, gpgpu_smemq_entries);
++      printf(
++          "GPGPU-Sim SMEMQ: active_warp_occupancy_before_smemq = %.4f%%, "
++          "active_warp_occupancy_after_smemq = %.4f%%\n",
++          100.0 * (double)(result_before_smemq * padded_cta_size) /
++              (double)n_thread_per_shader,
++          100.0 * (double)(result * padded_cta_size) /
++              (double)n_thread_per_shader);
++      printf(
++          "GPGPU-Sim SMEMQ: metadata_bits_per_cta = %u, "
++          "payload_words_per_lane = %u, queues_per_original_warp = %u\n",
++          smemq_metadata_bits_per_cta(k), smemq_payload_words_per_lane(),
++          smemq_queues_per_original_warp());
++    }
+   }
+ 
+   // gpu_max_cta_per_shader is limited by number of CTAs if not enough to keep
+@@ -3996,6 +4641,20 @@ void shader_core_ctx::set_max_cta(const kernel_info_t &kernel) {
+       (gpu_cta_size % m_config->warp_size)
+           ? m_config->warp_size * ((gpu_cta_size / m_config->warp_size) + 1)
+           : gpu_cta_size;
++  if (m_config->gpgpu_wasp_enable && m_config->gpgpu_wasp_rfq_enable) {
++    m_stats->wasp_rfq_register_slots_per_cta =
++        m_config->wasp_rfq_regs_per_cta(kernel);
++    m_stats->wasp_rfq_metadata_bits_per_cta =
++        m_config->wasp_rfq_metadata_bits_per_cta(kernel);
++    m_stats->wasp_rfq_adjusted_max_cta = kernel_max_cta_per_shader;
++  }
++  if (m_config->gpgpu_smemq_enable) {
++    m_stats->smemq_shared_bytes_per_cta =
++        m_config->smemq_shared_bytes_per_cta(kernel);
++    m_stats->smemq_metadata_bits_per_cta =
++        m_config->smemq_metadata_bits_per_cta(kernel);
++    m_stats->smemq_adjusted_max_cta = kernel_max_cta_per_shader;
++  }
+ }
+ 
+ void shader_core_ctx::decrement_atomic_count(unsigned wid, unsigned n) {
+diff --git a/src/gpgpu-sim/shader.h b/src/gpgpu-sim/shader.h
+index ee10af6..a2a4b4e 100644
+--- a/src/gpgpu-sim/shader.h
++++ b/src/gpgpu-sim/shader.h
+@@ -34,9 +34,11 @@
+ #define SHADER_H
+ 
+ #include <assert.h>
++#include <ctype.h>
+ #include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <algorithm>
+ #include <bitset>
+ #include <deque>
+@@ -57,6 +59,8 @@
+ #include "stack.h"
+ #include "stats.h"
+ #include "traffic_breakdown.h"
++#include "wasp-rfq.h"
++#include "wasp-smem-queue.h"
+ 
+ #define NO_OP_FLAG 0xFF
+ 
+@@ -75,6 +79,23 @@
+ 
+ class gpgpu_context;
+ 
++static inline void wasp_metadata_trim(char *s) {
++  char *start = s;
++  while (*start && isspace(*start)) start++;
++  if (start != s) memmove(s, start, strlen(start) + 1);
++  size_t len = strlen(s);
++  while (len > 0 && isspace(s[len - 1])) s[--len] = '\0';
++}
++
++static inline void wasp_parse_metadata_value(char *line, const char *key,
++                                             unsigned *value) {
++  char lhs[128];
++  unsigned rhs = 0;
++  if (sscanf(line, " %127[^=]= %u", lhs, &rhs) != 2) return;
++  wasp_metadata_trim(lhs);
++  if (!strcmp(lhs, key)) *value = rhs;
++}
++
+ enum exec_unit_type_t {
+   NONE = 0,
+   SP = 1,
+@@ -1596,9 +1617,95 @@ class shader_core_config : public core_config {
+       }
+       std::sort(shmem_opt_list.begin(), shmem_opt_list.end());
+     }
++
++    wasp_metadata_num_pipeline_stages = 2;
++    wasp_metadata_producer_warps_per_cta = 0;
++    wasp_metadata_queues_per_original_warp = 1;
++    wasp_metadata_payload_words_per_lane = 3;
++    wasp_metadata_element_bits = 96;
++    if (gpgpu_wasp_metadata_file && strlen(gpgpu_wasp_metadata_file) > 0) {
++      FILE *metadata = fopen(gpgpu_wasp_metadata_file, "r");
++      if (!metadata) {
++        printf("GPGPU-Sim WASP RFQ: cannot open metadata file '%s'\n",
++               gpgpu_wasp_metadata_file);
++        abort();
++      }
++      char line[512];
++      while (fgets(line, sizeof(line), metadata)) {
++        char *comment = strchr(line, '#');
++        if (comment) *comment = '\0';
++        wasp_parse_metadata_value(line, "num_pipeline_stages",
++                                  &wasp_metadata_num_pipeline_stages);
++        wasp_parse_metadata_value(line, "producer_warps_per_cta",
++                                  &wasp_metadata_producer_warps_per_cta);
++        wasp_parse_metadata_value(line, "queues_per_original_warp",
++                                  &wasp_metadata_queues_per_original_warp);
++        wasp_parse_metadata_value(line, "payload_words_per_lane",
++                                  &wasp_metadata_payload_words_per_lane);
++        wasp_parse_metadata_value(line, "element_bits",
++                                  &wasp_metadata_element_bits);
++      }
++      fclose(metadata);
++    }
++    if (wasp_metadata_num_pipeline_stages > gpgpu_wasp_max_pipeline_stages) {
++      printf(
++          "GPGPU-Sim WASP RFQ: metadata stages %u exceed configured max %u\n",
++          wasp_metadata_num_pipeline_stages, gpgpu_wasp_max_pipeline_stages);
++      abort();
++    }
++    assert(wasp_metadata_queues_per_original_warp > 0);
++    assert(wasp_metadata_payload_words_per_lane > 0);
++
++    smemq_metadata_num_pipeline_stages = 2;
++    smemq_metadata_producer_warps_per_cta = 0;
++    smemq_metadata_queues_per_original_warp = 1;
++    smemq_metadata_payload_words_per_lane = 3;
++    smemq_metadata_element_bits = 96;
++    if (gpgpu_smemq_metadata_file && strlen(gpgpu_smemq_metadata_file) > 0) {
++      FILE *metadata = fopen(gpgpu_smemq_metadata_file, "r");
++      if (!metadata) {
++        printf("GPGPU-Sim SMEMQ: cannot open metadata file '%s'\n",
++               gpgpu_smemq_metadata_file);
++        abort();
++      }
++      char line[512];
++      while (fgets(line, sizeof(line), metadata)) {
++        char *comment = strchr(line, '#');
++        if (comment) *comment = '\0';
++        wasp_parse_metadata_value(line, "num_pipeline_stages",
++                                  &smemq_metadata_num_pipeline_stages);
++        wasp_parse_metadata_value(line, "producer_warps_per_cta",
++                                  &smemq_metadata_producer_warps_per_cta);
++        wasp_parse_metadata_value(line, "queues_per_original_warp",
++                                  &smemq_metadata_queues_per_original_warp);
++        wasp_parse_metadata_value(line, "payload_words_per_lane",
++                                  &smemq_metadata_payload_words_per_lane);
++        wasp_parse_metadata_value(line, "element_bits",
++                                  &smemq_metadata_element_bits);
++      }
++      fclose(metadata);
++    }
++    if (smemq_metadata_num_pipeline_stages > gpgpu_wasp_max_pipeline_stages) {
++      printf("GPGPU-Sim SMEMQ: metadata stages %u exceed configured max %u\n",
++             smemq_metadata_num_pipeline_stages,
++             gpgpu_wasp_max_pipeline_stages);
++      abort();
++    }
++    assert(smemq_metadata_queues_per_original_warp > 0);
++    assert(smemq_metadata_payload_words_per_lane > 0);
+   }
+   void reg_options(class OptionParser *opp);
+   unsigned max_cta(const kernel_info_t &k) const;
++  unsigned wasp_rfq_regs_per_cta(const kernel_info_t &k) const;
++  unsigned wasp_rfq_producer_warps_per_cta(const kernel_info_t &k) const;
++  unsigned wasp_rfq_payload_words_per_lane() const;
++  unsigned wasp_rfq_queues_per_original_warp() const;
++  unsigned wasp_rfq_metadata_bits_per_cta(const kernel_info_t &k) const;
++  unsigned smemq_shared_bytes_per_cta(const kernel_info_t &k) const;
++  unsigned smemq_producer_warps_per_cta(const kernel_info_t &k) const;
++  unsigned smemq_payload_words_per_lane() const;
++  unsigned smemq_queues_per_original_warp() const;
++  unsigned smemq_metadata_bits_per_cta(const kernel_info_t &k) const;
+   unsigned num_shader() const {
+     return n_simt_clusters * n_simt_cores_per_cluster;
+   }
+@@ -1688,6 +1795,34 @@ class shader_core_config : public core_config {
+   bool gpgpu_ignore_resources_limitation;
+   bool sub_core_model;
+ 
++  bool gpgpu_wasp_enable;
++  bool gpgpu_wasp_rfq_enable;
++  unsigned gpgpu_wasp_rfq_entries;
++  unsigned gpgpu_wasp_max_pipeline_stages;
++  bool gpgpu_wasp_rfq_count_register_pressure;
++  bool gpgpu_wasp_rfq_model_data;
++  bool gpgpu_wasp_rfq_strict_fifo;
++  bool gpgpu_wasp_rfq_assert_mask_match;
++  char *gpgpu_wasp_metadata_file;
++  unsigned wasp_metadata_num_pipeline_stages;
++  unsigned wasp_metadata_producer_warps_per_cta;
++  unsigned wasp_metadata_queues_per_original_warp;
++  unsigned wasp_metadata_payload_words_per_lane;
++  unsigned wasp_metadata_element_bits;
++
++  bool gpgpu_smemq_enable;
++  unsigned gpgpu_smemq_entries;
++  bool gpgpu_smemq_scheduler_ready;
++  bool gpgpu_smemq_model_data;
++  bool gpgpu_smemq_assert_mask_match;
++  bool gpgpu_smemq_bank_conflict_model;
++  char *gpgpu_smemq_metadata_file;
++  unsigned smemq_metadata_num_pipeline_stages;
++  unsigned smemq_metadata_producer_warps_per_cta;
++  unsigned smemq_metadata_queues_per_original_warp;
++  unsigned smemq_metadata_payload_words_per_lane;
++  unsigned smemq_metadata_element_bits;
++
+   unsigned max_sp_latency;
+   unsigned max_int_latency;
+   unsigned max_sfu_latency;
+@@ -1792,9 +1927,33 @@ struct shader_core_stats_pod {
+   unsigned *shader_cycle_distro;
+   unsigned *last_shader_cycle_distro;
+   unsigned *num_warps_issuable;
++  unsigned long long *eligible_warp_count;
++  unsigned long long *eligible_warp_slot_count;
++  unsigned long long *eligible_warp_sample_count;
+   unsigned gpgpu_n_stall_shd_mem;
+   unsigned *single_issue_nums;
+   unsigned *dual_issue_nums;
++  unsigned long long wasp_rfq_reservations;
++  unsigned long long wasp_rfq_memory_fills;
++  unsigned long long wasp_rfq_consumes;
++  unsigned long long wasp_rfq_full_stalls;
++  unsigned long long wasp_rfq_empty_stalls;
++  unsigned long long wasp_rfq_head_not_ready_stalls;
++  unsigned long long wasp_rfq_register_slots_per_cta;
++  unsigned long long wasp_rfq_metadata_bits_per_cta;
++  unsigned long long wasp_rfq_max_occupancy;
++  unsigned long long wasp_stage_issue_count[16];
++  unsigned wasp_rfq_adjusted_max_cta;
++  unsigned long long smemq_reservations;
++  unsigned long long smemq_memory_fills;
++  unsigned long long smemq_consumes;
++  unsigned long long smemq_full_stalls;
++  unsigned long long smemq_empty_stalls;
++  unsigned long long smemq_head_not_ready_stalls;
++  unsigned long long smemq_shared_bytes_per_cta;
++  unsigned long long smemq_metadata_bits_per_cta;
++  unsigned long long smemq_max_occupancy;
++  unsigned smemq_adjusted_max_cta;
+ 
+   unsigned ctas_completed;
+   // memory access classification
+@@ -1915,6 +2074,12 @@ class shader_core_stats : public shader_core_stats_pod {
+         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+     dual_issue_nums =
+         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
++    eligible_warp_count = (unsigned long long *)calloc(
++        config->gpgpu_num_sched_per_core, sizeof(unsigned long long));
++    eligible_warp_slot_count = (unsigned long long *)calloc(
++        config->gpgpu_num_sched_per_core, sizeof(unsigned long long));
++    eligible_warp_sample_count = (unsigned long long *)calloc(
++        config->gpgpu_num_sched_per_core, sizeof(unsigned long long));
+ 
+     ctas_completed = 0;
+     n_simt_to_mem = (long *)calloc(config->num_shader(), sizeof(long));
+@@ -1980,6 +2145,9 @@ class shader_core_stats : public shader_core_stats_pod {
+     free(m_n_diverge);
+     free(shader_cycle_distro);
+     free(last_shader_cycle_distro);
++    free(eligible_warp_count);
++    free(eligible_warp_slot_count);
++    free(eligible_warp_sample_count);
+   }
+ 
+   void new_grid() {}
+@@ -2139,6 +2307,31 @@ class shader_core_ctx : public core_t {
+ 
+   void get_icnt_power_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
+ 
++  bool wasp_rfq_enabled() const;
++  bool wasp_rfq_can_issue(unsigned warp_id, const warp_inst_t *inst,
++                          bool count_stall);
++  void wasp_rfq_prepare_issue(warp_inst_t *inst);
++  void wasp_rfq_after_func_exec(warp_inst_t *inst);
++  bool wasp_rfq_load_pending(const warp_inst_t &inst) const;
++  bool wasp_rfq_mark_mem_response(const warp_inst_t &inst);
++  void wasp_rfq_functional_store_lane(const warp_inst_t &inst,
++                                      unsigned lane_id, unsigned word,
++                                      uint64_t value);
++  uint64_t wasp_rfq_functional_read_lane(const warp_inst_t &inst,
++                                         unsigned lane_id,
++                                         unsigned word) const;
++  bool smemq_enabled() const;
++  bool smemq_can_issue(unsigned warp_id, const warp_inst_t *inst,
++                       bool count_stall);
++  void smemq_prepare_issue(warp_inst_t *inst);
++  void smemq_after_func_exec(warp_inst_t *inst);
++  bool smemq_load_pending(const warp_inst_t &inst) const;
++  bool smemq_mark_mem_response(const warp_inst_t &inst);
++  void smemq_functional_store_lane(const warp_inst_t &inst, unsigned lane_id,
++                                   unsigned word, uint64_t value);
++  uint64_t smemq_functional_read_lane(const warp_inst_t &inst,
++                                      unsigned lane_id, unsigned word) const;
++
+   // debug:
+   void display_simt_state(FILE *fout, int mask) const;
+   void display_pipeline(FILE *fout, int print_mem, int mask3bit) const;
+@@ -2569,6 +2762,18 @@ class shader_core_ctx : public core_t {
+   int find_available_hwtid(unsigned int cta_size, bool occupy);
+ 
+  private:
++  wasp_rfq_key wasp_rfq_key_for_warp(unsigned warp_id,
++                                     unsigned queue_id) const;
++  wasp_rfq_token wasp_rfq_token_from_inst(const warp_inst_t &inst) const;
++  void wasp_rfq_write_token_to_inst(warp_inst_t *inst,
++                                    const wasp_rfq_token &token);
++  smemq_key smemq_key_for_warp(unsigned warp_id, unsigned queue_id) const;
++  smemq_token smemq_token_from_inst(const warp_inst_t &inst) const;
++  void smemq_write_token_to_inst(warp_inst_t *inst,
++                                 const smemq_token &token);
++
++  wasp_rfq_table m_wasp_rfq_table;
++  smemq_table m_smemq_table;
+   unsigned int m_occupied_n_threads;
+   unsigned int m_occupied_shmem;
+   unsigned int m_occupied_regs;
+diff --git a/src/gpgpu-sim/wasp-rfq.cc b/src/gpgpu-sim/wasp-rfq.cc
+new file mode 100644
+index 0000000..2b4d773
+--- /dev/null
++++ b/src/gpgpu-sim/wasp-rfq.cc
+@@ -0,0 +1,179 @@
++#include "wasp-rfq.h"
++
++#include <assert.h>
++#include <algorithm>
++
++wasp_rfq::wasp_rfq()
++    : m_entries(0),
++      m_payload_words_per_lane(0),
++      m_warp_size(0),
++      m_head(0),
++      m_tail(0),
++      m_occupancy(0),
++      m_next_sequence(1) {}
++
++void wasp_rfq::configure(unsigned entries, unsigned payload_words_per_lane,
++                         unsigned warp_size) {
++  if (configured()) {
++    assert(m_entries == entries);
++    assert(m_payload_words_per_lane == payload_words_per_lane);
++    assert(m_warp_size == warp_size);
++    return;
++  }
++
++  assert(entries > 0);
++  assert(payload_words_per_lane > 0);
++  assert(warp_size > 0);
++  m_entries = entries;
++  m_payload_words_per_lane = payload_words_per_lane;
++  m_warp_size = warp_size;
++  m_storage.resize(entries);
++  for (unsigned i = 0; i < entries; ++i) {
++    m_storage[i].lane_payload.assign(warp_size * payload_words_per_lane, 0);
++  }
++}
++
++bool wasp_rfq::head_ready() const {
++  if (empty()) return false;
++  return m_storage[m_head].state == RFQ_READY;
++}
++
++unsigned wasp_rfq::ready_count() const {
++  unsigned count = 0;
++  for (unsigned i = 0; i < m_entries; ++i)
++    if (m_storage[i].state == RFQ_READY) count++;
++  return count;
++}
++
++unsigned wasp_rfq::pending_count() const {
++  unsigned count = 0;
++  for (unsigned i = 0; i < m_entries; ++i)
++    if (m_storage[i].state == RFQ_RESERVED) count++;
++  return count;
++}
++
++wasp_rfq_token wasp_rfq::reserve_tail(const wasp_rfq_key &key,
++                                      const active_mask_t &active_mask,
++                                      unsigned pending_responses) {
++  assert(configured());
++  assert(!full());
++  entry &e = m_storage[m_tail];
++  assert(e.state == RFQ_FREE);
++
++  e.state = pending_responses == 0 ? RFQ_READY : RFQ_RESERVED;
++  e.sequence = m_next_sequence++;
++  e.pending_responses = pending_responses;
++  e.payload_words_per_lane = m_payload_words_per_lane;
++  e.active_mask = active_mask;
++  std::fill(e.lane_payload.begin(), e.lane_payload.end(), 0);
++
++  wasp_rfq_token token;
++  token.key = key;
++  token.slot_index = m_tail;
++  token.sequence = e.sequence;
++  token.payload_words_per_lane = m_payload_words_per_lane;
++  token.valid = true;
++
++  m_tail = (m_tail + 1) % m_entries;
++  m_occupancy++;
++  return token;
++}
++
++void wasp_rfq::set_pending_responses(const wasp_rfq_token &token,
++                                     unsigned pending_responses) {
++  entry &e = entry_for_token(token);
++  e.pending_responses = pending_responses;
++  e.state = pending_responses == 0 ? RFQ_READY : RFQ_RESERVED;
++}
++
++bool wasp_rfq::has_pending_responses(const wasp_rfq_token &token) const {
++  const entry &e = entry_for_token(token);
++  return e.pending_responses > 0;
++}
++
++bool wasp_rfq::mark_response(const wasp_rfq_token &token) {
++  entry &e = entry_for_token(token);
++  assert(e.state == RFQ_RESERVED || e.state == RFQ_READY);
++  assert(e.pending_responses > 0);
++  e.pending_responses--;
++  if (e.pending_responses == 0) {
++    e.state = RFQ_READY;
++    return true;
++  }
++  return false;
++}
++
++void wasp_rfq::consume_head(const wasp_rfq_key &key) {
++  (void)key;
++  assert(!empty());
++  entry &e = m_storage[m_head];
++  assert(e.state == RFQ_READY);
++  e.state = RFQ_FREE;
++  e.pending_responses = 0;
++  e.active_mask.reset();
++  std::fill(e.lane_payload.begin(), e.lane_payload.end(), 0);
++  m_head = (m_head + 1) % m_entries;
++  m_occupancy--;
++}
++
++void wasp_rfq::set_lane_value(const wasp_rfq_token &token, unsigned lane,
++                              unsigned word, uint64_t value) {
++  entry &e = entry_for_token(token);
++  assert(lane < m_warp_size);
++  assert(word < e.payload_words_per_lane);
++  e.lane_payload[lane * e.payload_words_per_lane + word] = value;
++}
++
++uint64_t wasp_rfq::head_lane_value(unsigned lane, unsigned word) const {
++  assert(head_ready());
++  const entry &e = m_storage[m_head];
++  assert(lane < m_warp_size);
++  assert(word < e.payload_words_per_lane);
++  return e.lane_payload[lane * e.payload_words_per_lane + word];
++}
++
++wasp_rfq::entry &wasp_rfq::entry_for_token(const wasp_rfq_token &token) {
++  assert(token.valid);
++  assert(token.slot_index < m_entries);
++  entry &e = m_storage[token.slot_index];
++  assert(e.sequence == token.sequence);
++  return e;
++}
++
++const wasp_rfq::entry &wasp_rfq::entry_for_token(
++    const wasp_rfq_token &token) const {
++  assert(token.valid);
++  assert(token.slot_index < m_entries);
++  const entry &e = m_storage[token.slot_index];
++  assert(e.sequence == token.sequence);
++  return e;
++}
++
++wasp_rfq &wasp_rfq_table::get_or_create(const wasp_rfq_key &key,
++                                        unsigned entries,
++                                        unsigned payload_words_per_lane,
++                                        unsigned warp_size) {
++  wasp_rfq &queue = m_queues[key];
++  queue.configure(entries, payload_words_per_lane, warp_size);
++  return queue;
++}
++
++wasp_rfq *wasp_rfq_table::find(const wasp_rfq_key &key) {
++  std::map<wasp_rfq_key, wasp_rfq>::iterator it = m_queues.find(key);
++  return it == m_queues.end() ? NULL : &it->second;
++}
++
++const wasp_rfq *wasp_rfq_table::find(const wasp_rfq_key &key) const {
++  std::map<wasp_rfq_key, wasp_rfq>::const_iterator it = m_queues.find(key);
++  return it == m_queues.end() ? NULL : &it->second;
++}
++
++void wasp_rfq_table::erase_cta(unsigned cta_hw_id) {
++  std::map<wasp_rfq_key, wasp_rfq>::iterator it = m_queues.begin();
++  while (it != m_queues.end()) {
++    if (it->first.cta_hw_id == cta_hw_id)
++      it = m_queues.erase(it);
++    else
++      ++it;
++  }
++}
+diff --git a/src/gpgpu-sim/wasp-rfq.h b/src/gpgpu-sim/wasp-rfq.h
+new file mode 100644
+index 0000000..9672832
+--- /dev/null
++++ b/src/gpgpu-sim/wasp-rfq.h
+@@ -0,0 +1,123 @@
++#ifndef WASP_RFQ_H_
++#define WASP_RFQ_H_
++
++#include <stdint.h>
++
++#include <map>
++#include <vector>
++
++#include "../abstract_hardware_model.h"
++
++struct wasp_rfq_key {
++  unsigned cta_hw_id;
++  unsigned original_warp_id;
++  unsigned src_stage_id;
++  unsigned dst_stage_id;
++  unsigned queue_id;
++
++  wasp_rfq_key()
++      : cta_hw_id(0),
++        original_warp_id(0),
++        src_stage_id(0),
++        dst_stage_id(1),
++        queue_id(0) {}
++
++  bool operator<(const wasp_rfq_key &rhs) const {
++    if (cta_hw_id != rhs.cta_hw_id) return cta_hw_id < rhs.cta_hw_id;
++    if (original_warp_id != rhs.original_warp_id)
++      return original_warp_id < rhs.original_warp_id;
++    if (src_stage_id != rhs.src_stage_id)
++      return src_stage_id < rhs.src_stage_id;
++    if (dst_stage_id != rhs.dst_stage_id)
++      return dst_stage_id < rhs.dst_stage_id;
++    return queue_id < rhs.queue_id;
++  }
++};
++
++struct wasp_rfq_token {
++  wasp_rfq_key key;
++  unsigned slot_index;
++  unsigned sequence;
++  unsigned payload_words_per_lane;
++  bool valid;
++
++  wasp_rfq_token()
++      : slot_index(0),
++        sequence(0),
++        payload_words_per_lane(0),
++        valid(false) {}
++};
++
++class wasp_rfq {
++ public:
++  wasp_rfq();
++
++  void configure(unsigned entries, unsigned payload_words_per_lane,
++                 unsigned warp_size);
++  bool configured() const { return m_entries > 0; }
++  bool full() const { return m_occupancy >= m_entries; }
++  bool empty() const { return m_occupancy == 0; }
++  bool head_ready() const;
++  unsigned occupancy() const { return m_occupancy; }
++  unsigned ready_count() const;
++  unsigned pending_count() const;
++
++  wasp_rfq_token reserve_tail(const wasp_rfq_key &key,
++                              const active_mask_t &active_mask,
++                              unsigned pending_responses);
++  void set_pending_responses(const wasp_rfq_token &token,
++                             unsigned pending_responses);
++  bool has_pending_responses(const wasp_rfq_token &token) const;
++  bool mark_response(const wasp_rfq_token &token);
++  void consume_head(const wasp_rfq_key &key);
++
++  void set_lane_value(const wasp_rfq_token &token, unsigned lane,
++                      unsigned word, uint64_t value);
++  uint64_t head_lane_value(unsigned lane, unsigned word) const;
++
++ private:
++  enum entry_state { RFQ_FREE = 0, RFQ_RESERVED, RFQ_READY };
++
++  struct entry {
++    entry()
++        : state(RFQ_FREE),
++          sequence(0),
++          pending_responses(0),
++          payload_words_per_lane(0) {}
++
++    entry_state state;
++    unsigned sequence;
++    unsigned pending_responses;
++    unsigned payload_words_per_lane;
++    active_mask_t active_mask;
++    std::vector<uint64_t> lane_payload;
++  };
++
++  entry &entry_for_token(const wasp_rfq_token &token);
++  const entry &entry_for_token(const wasp_rfq_token &token) const;
++
++  unsigned m_entries;
++  unsigned m_payload_words_per_lane;
++  unsigned m_warp_size;
++  unsigned m_head;
++  unsigned m_tail;
++  unsigned m_occupancy;
++  unsigned m_next_sequence;
++  std::vector<entry> m_storage;
++};
++
++class wasp_rfq_table {
++ public:
++  wasp_rfq &get_or_create(const wasp_rfq_key &key, unsigned entries,
++                          unsigned payload_words_per_lane,
++                          unsigned warp_size);
++  wasp_rfq *find(const wasp_rfq_key &key);
++  const wasp_rfq *find(const wasp_rfq_key &key) const;
++  void erase_cta(unsigned cta_hw_id);
++  void clear() { m_queues.clear(); }
++
++ private:
++  std::map<wasp_rfq_key, wasp_rfq> m_queues;
++};
++
++#endif
+diff --git a/src/gpgpu-sim/wasp-smem-queue.cc b/src/gpgpu-sim/wasp-smem-queue.cc
+new file mode 100644
+index 0000000..c31d124
+--- /dev/null
++++ b/src/gpgpu-sim/wasp-smem-queue.cc
+@@ -0,0 +1,177 @@
++#include "wasp-smem-queue.h"
++
++#include <assert.h>
++#include <algorithm>
++
++smemq::smemq()
++    : m_entries(0),
++      m_payload_words_per_lane(0),
++      m_warp_size(0),
++      m_head(0),
++      m_tail(0),
++      m_occupancy(0),
++      m_next_sequence(1) {}
++
++void smemq::configure(unsigned entries, unsigned payload_words_per_lane,
++                      unsigned warp_size) {
++  if (configured()) {
++    assert(m_entries == entries);
++    assert(m_payload_words_per_lane == payload_words_per_lane);
++    assert(m_warp_size == warp_size);
++    return;
++  }
++
++  assert(entries > 0);
++  assert(payload_words_per_lane > 0);
++  assert(warp_size > 0);
++  m_entries = entries;
++  m_payload_words_per_lane = payload_words_per_lane;
++  m_warp_size = warp_size;
++  m_storage.resize(entries);
++  for (unsigned i = 0; i < entries; ++i) {
++    m_storage[i].lane_payload.assign(warp_size * payload_words_per_lane, 0);
++  }
++}
++
++bool smemq::head_ready() const {
++  if (empty()) return false;
++  return m_storage[m_head].state == SMEMQ_READY;
++}
++
++unsigned smemq::ready_count() const {
++  unsigned count = 0;
++  for (unsigned i = 0; i < m_entries; ++i)
++    if (m_storage[i].state == SMEMQ_READY) count++;
++  return count;
++}
++
++unsigned smemq::pending_count() const {
++  unsigned count = 0;
++  for (unsigned i = 0; i < m_entries; ++i)
++    if (m_storage[i].state == SMEMQ_RESERVED) count++;
++  return count;
++}
++
++smemq_token smemq::reserve_tail(const smemq_key &key,
++                                const active_mask_t &active_mask,
++                                unsigned pending_responses) {
++  assert(configured());
++  assert(!full());
++  entry &e = m_storage[m_tail];
++  assert(e.state == SMEMQ_FREE);
++
++  e.state = pending_responses == 0 ? SMEMQ_READY : SMEMQ_RESERVED;
++  e.sequence = m_next_sequence++;
++  e.pending_responses = pending_responses;
++  e.payload_words_per_lane = m_payload_words_per_lane;
++  e.active_mask = active_mask;
++  std::fill(e.lane_payload.begin(), e.lane_payload.end(), 0);
++
++  smemq_token token;
++  token.key = key;
++  token.slot_index = m_tail;
++  token.sequence = e.sequence;
++  token.payload_words_per_lane = m_payload_words_per_lane;
++  token.valid = true;
++
++  m_tail = (m_tail + 1) % m_entries;
++  m_occupancy++;
++  return token;
++}
++
++void smemq::set_pending_responses(const smemq_token &token,
++                                  unsigned pending_responses) {
++  entry &e = entry_for_token(token);
++  e.pending_responses = pending_responses;
++  e.state = pending_responses == 0 ? SMEMQ_READY : SMEMQ_RESERVED;
++}
++
++bool smemq::has_pending_responses(const smemq_token &token) const {
++  const entry &e = entry_for_token(token);
++  return e.pending_responses > 0;
++}
++
++bool smemq::mark_response(const smemq_token &token) {
++  entry &e = entry_for_token(token);
++  assert(e.state == SMEMQ_RESERVED || e.state == SMEMQ_READY);
++  assert(e.pending_responses > 0);
++  e.pending_responses--;
++  if (e.pending_responses == 0) {
++    e.state = SMEMQ_READY;
++    return true;
++  }
++  return false;
++}
++
++void smemq::consume_head(const smemq_key &key) {
++  (void)key;
++  assert(!empty());
++  entry &e = m_storage[m_head];
++  assert(e.state == SMEMQ_READY);
++  e.state = SMEMQ_FREE;
++  e.pending_responses = 0;
++  e.active_mask.reset();
++  std::fill(e.lane_payload.begin(), e.lane_payload.end(), 0);
++  m_head = (m_head + 1) % m_entries;
++  m_occupancy--;
++}
++
++void smemq::set_lane_value(const smemq_token &token, unsigned lane,
++                           unsigned word, uint64_t value) {
++  entry &e = entry_for_token(token);
++  assert(lane < m_warp_size);
++  assert(word < e.payload_words_per_lane);
++  e.lane_payload[lane * e.payload_words_per_lane + word] = value;
++}
++
++uint64_t smemq::head_lane_value(unsigned lane, unsigned word) const {
++  assert(head_ready());
++  const entry &e = m_storage[m_head];
++  assert(lane < m_warp_size);
++  assert(word < e.payload_words_per_lane);
++  return e.lane_payload[lane * e.payload_words_per_lane + word];
++}
++
++smemq::entry &smemq::entry_for_token(const smemq_token &token) {
++  assert(token.valid);
++  assert(token.slot_index < m_entries);
++  entry &e = m_storage[token.slot_index];
++  assert(e.sequence == token.sequence);
++  return e;
++}
++
++const smemq::entry &smemq::entry_for_token(const smemq_token &token) const {
++  assert(token.valid);
++  assert(token.slot_index < m_entries);
++  const entry &e = m_storage[token.slot_index];
++  assert(e.sequence == token.sequence);
++  return e;
++}
++
++smemq &smemq_table::get_or_create(const smemq_key &key, unsigned entries,
++                                  unsigned payload_words_per_lane,
++                                  unsigned warp_size) {
++  smemq &queue = m_queues[key];
++  queue.configure(entries, payload_words_per_lane, warp_size);
++  return queue;
++}
++
++smemq *smemq_table::find(const smemq_key &key) {
++  std::map<smemq_key, smemq>::iterator it = m_queues.find(key);
++  return it == m_queues.end() ? NULL : &it->second;
++}
++
++const smemq *smemq_table::find(const smemq_key &key) const {
++  std::map<smemq_key, smemq>::const_iterator it = m_queues.find(key);
++  return it == m_queues.end() ? NULL : &it->second;
++}
++
++void smemq_table::erase_cta(unsigned cta_hw_id) {
++  std::map<smemq_key, smemq>::iterator it = m_queues.begin();
++  while (it != m_queues.end()) {
++    if (it->first.cta_hw_id == cta_hw_id)
++      it = m_queues.erase(it);
++    else
++      ++it;
++  }
++}
+diff --git a/src/gpgpu-sim/wasp-smem-queue.h b/src/gpgpu-sim/wasp-smem-queue.h
+new file mode 100644
+index 0000000..8e024b4
+--- /dev/null
++++ b/src/gpgpu-sim/wasp-smem-queue.h
+@@ -0,0 +1,122 @@
++#ifndef WASP_SMEM_QUEUE_H_
++#define WASP_SMEM_QUEUE_H_
++
++#include <stdint.h>
++
++#include <map>
++#include <vector>
++
++#include "../abstract_hardware_model.h"
++
++struct smemq_key {
++  unsigned cta_hw_id;
++  unsigned original_warp_id;
++  unsigned src_stage_id;
++  unsigned dst_stage_id;
++  unsigned queue_id;
++
++  smemq_key()
++      : cta_hw_id(0),
++        original_warp_id(0),
++        src_stage_id(0),
++        dst_stage_id(1),
++        queue_id(0) {}
++
++  bool operator<(const smemq_key &rhs) const {
++    if (cta_hw_id != rhs.cta_hw_id) return cta_hw_id < rhs.cta_hw_id;
++    if (original_warp_id != rhs.original_warp_id)
++      return original_warp_id < rhs.original_warp_id;
++    if (src_stage_id != rhs.src_stage_id)
++      return src_stage_id < rhs.src_stage_id;
++    if (dst_stage_id != rhs.dst_stage_id)
++      return dst_stage_id < rhs.dst_stage_id;
++    return queue_id < rhs.queue_id;
++  }
++};
++
++struct smemq_token {
++  smemq_key key;
++  unsigned slot_index;
++  unsigned sequence;
++  unsigned payload_words_per_lane;
++  bool valid;
++
++  smemq_token()
++      : slot_index(0),
++        sequence(0),
++        payload_words_per_lane(0),
++        valid(false) {}
++};
++
++class smemq {
++ public:
++  smemq();
++
++  void configure(unsigned entries, unsigned payload_words_per_lane,
++                 unsigned warp_size);
++  bool configured() const { return m_entries > 0; }
++  bool full() const { return m_occupancy >= m_entries; }
++  bool empty() const { return m_occupancy == 0; }
++  bool head_ready() const;
++  unsigned occupancy() const { return m_occupancy; }
++  unsigned ready_count() const;
++  unsigned pending_count() const;
++
++  smemq_token reserve_tail(const smemq_key &key,
++                           const active_mask_t &active_mask,
++                           unsigned pending_responses);
++  void set_pending_responses(const smemq_token &token,
++                             unsigned pending_responses);
++  bool has_pending_responses(const smemq_token &token) const;
++  bool mark_response(const smemq_token &token);
++  void consume_head(const smemq_key &key);
++
++  void set_lane_value(const smemq_token &token, unsigned lane, unsigned word,
++                      uint64_t value);
++  uint64_t head_lane_value(unsigned lane, unsigned word) const;
++
++ private:
++  enum entry_state { SMEMQ_FREE = 0, SMEMQ_RESERVED, SMEMQ_READY };
++
++  struct entry {
++    entry()
++        : state(SMEMQ_FREE),
++          sequence(0),
++          pending_responses(0),
++          payload_words_per_lane(0) {}
++
++    entry_state state;
++    unsigned sequence;
++    unsigned pending_responses;
++    unsigned payload_words_per_lane;
++    active_mask_t active_mask;
++    std::vector<uint64_t> lane_payload;
++  };
++
++  entry &entry_for_token(const smemq_token &token);
++  const entry &entry_for_token(const smemq_token &token) const;
++
++  unsigned m_entries;
++  unsigned m_payload_words_per_lane;
++  unsigned m_warp_size;
++  unsigned m_head;
++  unsigned m_tail;
++  unsigned m_occupancy;
++  unsigned m_next_sequence;
++  std::vector<entry> m_storage;
++};
++
++class smemq_table {
++ public:
++  smemq &get_or_create(const smemq_key &key, unsigned entries,
++                       unsigned payload_words_per_lane, unsigned warp_size);
++  smemq *find(const smemq_key &key);
++  const smemq *find(const smemq_key &key) const;
++  void erase_cta(unsigned cta_hw_id);
++  void clear() { m_queues.clear(); }
++
++ private:
++  std::map<smemq_key, smemq> m_queues;
++};
++
++#endif

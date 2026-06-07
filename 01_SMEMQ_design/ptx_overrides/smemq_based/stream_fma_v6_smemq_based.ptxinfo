@@ -1,0 +1,12 @@
+ptxas info    : Compiling entry function 'stream_fma_v6_v3a_m1_kernel' for 'sm_70'
+ptxas info    : Used 32 registers, 0 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function 'stream_fma_v6_v3a_m2_kernel' for 'sm_70'
+ptxas info    : Used 32 registers, 0 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function 'stream_fma_v6_v3a_m4_kernel' for 'sm_70'
+ptxas info    : Used 32 registers, 0 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function 'stream_fma_v6_v3a_m8_kernel' for 'sm_70'
+ptxas info    : Used 32 registers, 0 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function 'stream_fma_v6_v3a_m16_kernel' for 'sm_70'
+ptxas info    : Used 32 registers, 0 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function 'stream_fma_v6_v3a_m32_kernel' for 'sm_70'
+ptxas info    : Used 32 registers, 0 bytes smem, 400 bytes cmem[0]
